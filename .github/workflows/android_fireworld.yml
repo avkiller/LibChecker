@@ -84,6 +84,13 @@ jobs:
         run: |
           ./gradlew clean
           ./gradlew -PappVerName=${{ env.VERSION }} app:assembleRelease
+      - name: Upload gradle log
+        # if: success() && github.event_name != 'pull_request' && github.repository == 'LibChecker/LibChecker'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle_log
+          path: /home/runner/work/_temp/.gradle-actions/build-scans
+          
       - name: Upload built Foss apk
         # if: success() && github.event_name != 'pull_request' && github.repository == 'LibChecker/LibChecker'
         uses: actions/upload-artifact@v4
