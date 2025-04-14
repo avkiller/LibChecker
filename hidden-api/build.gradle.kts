@@ -3,7 +3,7 @@ plugins {
 }
 
 setupLibraryModule {
-  namespace = "com.absinthe.libchecker.hidden_api"
+  namespace = "com.fireworld.libchecker.hidden_api"
 }
 
 dependencies {
