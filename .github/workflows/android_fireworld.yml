@@ -83,9 +83,9 @@ jobs:
       - name: Build with Gradle
         run: |
           ./gradlew clean
-          ./gradlew --debug -PappVerName=${{ env.VERSION }} app:assembleRelease
+          ./gradlew -PappVerName=${{ env.VERSION }} app:assembleRelease
       - name: Upload gradle log
-        if: always()
+        if: false
         uses: actions/upload-artifact@v4
         with:
           name: gradle_log
