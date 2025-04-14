@@ -24,9 +24,9 @@ ksp {
 }
 
 setupAppModule {
-  namespace = "com.absinthe.libchecker"
+  namespace = "com.fireworld.libchecker"
   defaultConfig {
-    applicationId = "com.absinthe.libchecker"
+    applicationId = "com.fireworld.libchecker"
   }
   androidResources {
     generateLocaleConfig = true
