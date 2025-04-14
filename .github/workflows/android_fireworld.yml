@@ -36,7 +36,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: 24
+          java-version: 22
       - uses: gradle/actions/setup-gradle@v4
         with:
           cache-encryption-key: q7iF8OuxPFqECZ5mVlqj7A==
@@ -71,7 +71,7 @@ jobs:
           echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_ENV
       - name: Write sign info
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master' && github.repository == 'LibChecker/LibChecker'
+        # if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master' && github.repository == 'LibChecker/LibChecker'
         run: |
           if [ ! -z "${{ secrets.SIGNING_KEY }}" ]; then
             echo releaseStorePassword='${{ secrets.KEY_STORE_PASSWORD }}' >> gradle.properties
