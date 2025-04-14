@@ -85,7 +85,7 @@ jobs:
           ./gradlew clean
           ./gradlew -PappVerName=${{ env.VERSION }} app:assembleRelease
       - name: Upload gradle log
-        # if: success() && github.event_name != 'pull_request' && github.repository == 'LibChecker/LibChecker'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gradle_log
