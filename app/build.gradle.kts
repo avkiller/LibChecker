@@ -24,7 +24,7 @@ ksp {
 }
 
 setupAppModule {
-  namespace = "com.fireworld.libchecker"
+  namespace = "com.absinthe.libchecker"
   defaultConfig {
     applicationId = "com.fireworld.libchecker"
   }
