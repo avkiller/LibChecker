@@ -7,7 +7,8 @@ import org.gradle.api.Project
 const val baseVersionName = "2.5.2"
 val Project.verName: String get() = "${baseVersionName}${versionNameSuffix}.${exec("git rev-parse --short=7 HEAD")}"
 val Project.verCode: Int get() = exec("git rev-list --count HEAD").toInt()
-val Project.isDevVersion: Boolean get() = exec("git tag -l $baseVersionName").isEmpty()
+val Project.isDevVersion: Boolean get() = false
+//val Project.isDevVersion: Boolean get() = exec("git tag -l $baseVersionName").isEmpty()
 val Project.versionNameSuffix: String get() = if (isDevVersion) ".dev" else ""
 
 fun Project.setupLibraryModule(block: LibraryExtension.() -> Unit = {}) {
@@ -22,17 +23,17 @@ fun Project.setupAppModule(block: BaseAppModuleExtension.() -> Unit = {}) {
       androidResources.localeFilters += mutableSetOf(
         "en",
         "zh-rCN",
-        "zh-rTW",
-        "zh-rHK",
-        "ru-rRU",
-        "ru-rUA",
-        "ja-rJP",
-        "vi-rVN",
-        "in-rID",
-        "pt-rBR",
-        "ar-rSA",
-        "tr-rTR",
-        "iw-rIL",
+        //"zh-rTW",
+        //"zh-rHK",
+        //"ru-rRU",
+        //"ru-rUA",
+        //"ja-rJP",
+        //"vi-rVN",
+        //"in-rID",
+        //"pt-rBR",
+        //"ar-rSA",
+        //"tr-rTR",
+        //"iw-rIL",
       )
     }
     val releaseSigning = if (project.hasProperty("releaseStoreFile")) {
