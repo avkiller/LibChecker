@@ -1100,15 +1100,15 @@ object PackageUtils {
       // Signature MD5
       append(context.getString(R.string.signature_md5))
       append(":")
-      appendLine(bytes.md5(":"))
+      appendLine(bytes.md5(""))
       // Signature SHA1
       append(context.getString(R.string.signature_sha1))
       append(":")
-      appendLine(bytes.sha1(":"))
+      appendLine(bytes.sha1(""))
       // Signature SHA256
       append(context.getString(R.string.signature_sha256))
       append(":")
-      appendLine(bytes.sha256(":"))
+      appendLine(bytes.sha256(""))
       // Signature CharString
       append(context.getString(R.string.signature_char_string))
       append(":")
