@@ -9,16 +9,16 @@ import com.google.firebase.ktx.Firebase
 object Telemetry {
 
   fun setEnable(enable: Boolean) {
-    Firebase.analytics.setAnalyticsCollectionEnabled(enable)
-    Firebase.crashlytics.setCrashlyticsCollectionEnabled(enable)
+    // Firebase.analytics.setAnalyticsCollectionEnabled(enable)
+    // Firebase.crashlytics.setCrashlyticsCollectionEnabled(enable)
   }
 
   fun recordException(t: Throwable) {
-    Firebase.crashlytics.recordException(t)
+    // Firebase.crashlytics.recordException(t)
   }
 
   fun recordEvent(name: String, params: Map<String, Any>) {
-    Firebase.analytics.logEvent(name.replace(" ", "_"), bundleOf(*params.toList().toTypedArray()))
+    // Firebase.analytics.logEvent(name.replace(" ", "_"), bundleOf(*params.toList().toTypedArray()))
   }
 
   object Event {

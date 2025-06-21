@@ -69,7 +69,7 @@ object GlobalValues {
 
   var isColorfulIcon: Boolean by SPDelegates(Constants.PREF_COLORFUL_ICON, true)
 
-  val isAnonymousAnalyticsEnabled: Boolean by SPDelegates(Constants.PREF_ANONYMOUS_ANALYTICS, true)
+  val isAnonymousAnalyticsEnabled: Boolean by SPDelegates(Constants.PREF_ANONYMOUS_ANALYTICS, false)
 
   var isDetailedAbiChart: Boolean by SPDelegates(Constants.PREF_DETAILED_ABI_CHART, false)
 

@@ -16,7 +16,7 @@ private const val WORKING_BRANCH = "v4"
 object ApiManager {
 
   private const val GITHUB_ROOT_URL =
-    "https://raw.githubusercontent.com/LibChecker/LibChecker-Rules/$WORKING_BRANCH/"
+    "https://raw.githubusercontent.com/avkiller/LibChecker-Rules/$WORKING_BRANCH/"
   private const val GITLAB_ROOT_URL =
     "https://gitlab.com/zhaobozhen/LibChecker-Rules/-/raw/$WORKING_BRANCH/"
 
@@ -27,7 +27,7 @@ object ApiManager {
 
   const val ANDROID_VERSION_DISTRIBUTION_URL = "https://dl.google.com/android/studio/metadata/distributions.json"
 
-  const val ASSETS_REPO_BASE_URL = "https://raw.githubusercontent.com/LibChecker/assets/main/"
+  const val ASSETS_REPO_BASE_URL = "https://raw.githubusercontent.com/avkiller/assets/main/"
 
   val root
     get() = when (GlobalValues.repo) {
