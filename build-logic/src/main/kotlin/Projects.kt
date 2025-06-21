@@ -22,6 +22,16 @@ fun Project.setupAppModule(block: BaseAppModuleExtension.() -> Unit = {}) {
       versionName = verName
       androidResources.localeFilters += mutableSetOf(
         "en",
+        "ar-rSA",
+        "de-rDE",
+        "in-rID",
+        "iw-rIL",
+        "ja-rJP",
+        "pt-rBR",
+        "ru-rRU",
+        "tr-rTR",
+        "uk-rUA",
+        "vi-rVN",
         "zh-rCN",
         //"zh-rTW",
         //"zh-rHK",
