@@ -1,10 +1,6 @@
 package com.absinthe.libchecker.utils
 
-import androidx.core.os.bundleOf
 import com.google.firebase.analytics.FirebaseAnalytics
-import com.google.firebase.analytics.ktx.analytics
-import com.google.firebase.crashlytics.ktx.crashlytics
-import com.google.firebase.ktx.Firebase
 
 object Telemetry {
 
