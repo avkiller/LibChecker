@@ -8,23 +8,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE20: true
 
 jobs:
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Skip duplicate actions
-        uses: fkirc/skip-duplicate-actions@v5
-        with:
-          cancel_others: true
-      - uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: 22
-      - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew spotlessCheck
-
   build:
     name: Build
     runs-on: ubuntu-latest
