@@ -28,9 +28,6 @@ setupAppModule {
   defaultConfig {
     applicationId = "com.fireworld.libchecker"
   }
-  androidResources {
-    generateLocaleConfig = true
-  }
 
   buildFeatures {
     aidl = true
