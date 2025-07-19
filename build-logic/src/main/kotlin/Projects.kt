@@ -25,19 +25,19 @@ fun Project.setupAppModule(block: BaseAppModuleExtension.() -> Unit = {}) {
         generateLocaleConfig = true
         localeFilters += mutableSetOf(
           "en",
-          "ar-rSA",
-          "de-rDE",
-          "in-rID",
-          "iw-rIL",
-          "ja-rJP",
-          "pt-rBR",
-          "ru-rRU",
-          "tr-rTR",
-          "uk-rUA",
-          "vi-rVN",
+          // "ar-rSA",
+          // "de-rDE",
+          // "in-rID",
+          // "iw-rIL",
+          // "ja-rJP",
+          // "pt-rBR",
+          // "ru-rRU",
+          // "tr-rTR",
+          // "uk-rUA",
+          // "vi-rVN",
           "zh-rCN",
-          "zh-rTW",
-          "zh-rHK",
+          // "zh-rTW",
+          // "zh-rHK",
         )
       }
     }
