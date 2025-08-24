@@ -57,8 +57,8 @@ import com.absinthe.libchecker.data.app.LocalAppDataSource
 import com.absinthe.libchecker.features.applist.detail.bean.StatefulComponent
 import com.absinthe.libchecker.features.statistics.bean.LibStringItem
 import com.absinthe.libchecker.utils.dex.FastDexFileFactory
-import com.absinthe.libchecker.utils.elf.ELFParser
 import com.absinthe.libchecker.utils.elf.ElfInfo
+import com.absinthe.libchecker.utils.elf.ElfParser
 import com.absinthe.libchecker.utils.extensions.ABI_64_BIT
 import com.absinthe.libchecker.utils.extensions.ABI_STRING_MAP
 import com.absinthe.libchecker.utils.extensions.ABI_STRING_RES_MAP
@@ -82,6 +82,7 @@ import com.absinthe.libchecker.utils.extensions.toClassDefType
 import com.absinthe.libchecker.utils.extensions.toHexString
 import com.absinthe.libchecker.utils.manifest.StaticLibraryReader
 import com.absinthe.libraries.utils.manager.TimeRecorder
+import com.android.apksig.ApkVerifier
 import com.android.tools.smali.dexlib2.Opcodes
 import dev.rikka.tools.refine.Refine
 import java.io.File
@@ -179,15 +180,20 @@ object PackageUtils {
           .filter { it.isFile && it.extension == "so" }
           .distinctBy { it.name }
           .map {
-            val elfParser =
-              runCatching { it.inputStream().use { input -> ELFParser(input) } }.getOrNull()
+            val elfParser = runCatching {
+              ElfParser(it).use { parser ->
+                parser.parseHeader()
+                parser
+              }
+            }.getOrNull()
             LibStringItem(
               name = it.name,
               size = FileUtils.getFileSize(it),
               elfInfo = ElfInfo(
                 elfParser?.getEType() ?: ET_NOT_ELF,
                 elfParser?.getMinPageSize() ?: -1
-              )
+              ),
+              source = it.path
             )
           }
         result.addAll(libs)
@@ -322,7 +328,13 @@ object PackageUtils {
           val offset = getDataOffsetMethod.invoke(zipFile, entry) as Long
 
           val currentEntryUncompressedAndNot16KB = entry.method == ZipEntry.STORED && (offset % PAGE_SIZE_16_KB) != 0L
-          val elfParser = runCatching { ELFParser(zipFile.getInputStream(entry)) }.getOrNull()
+          val elfParser = runCatching {
+            ElfParser(zipFile.getInputStream(entry)).use { parser ->
+              parser.parseHeader()
+              parser
+            }
+          }.getOrNull()
+
           val item = LibStringItem(
             name = entry.name.split(File.separator).last(),
             size = entry.size,
@@ -330,7 +342,8 @@ object PackageUtils {
               elfParser?.getEType() ?: ET_NOT_ELF,
               elfParser?.getMinPageSize() ?: -1,
               currentEntryUncompressedAndNot16KB
-            )
+            ),
+            source = entry.name
           )
           map.getOrPut(dir) { mutableListOf() }.add(item)
         }
@@ -742,7 +755,8 @@ object PackageUtils {
     }
 
     if (applicationInfo.sourceDir == null) {
-      throw IllegalStateException("sourceDir is null: ${packageInfo.packageName}")
+      Timber.e("sourceDir is null: ${packageInfo.packageName}")
+      return ERROR
     }
 
     val file = File(applicationInfo.sourceDir)
@@ -832,8 +846,7 @@ object PackageUtils {
     context: Context,
     item: LibStringItem
   ): String {
-    val source = item.source?.let { "[${item.source}]" }.orEmpty()
-    return "(${item.size.sizeToString(context, showBytes = false)}) $source"
+    return "(${item.size.sizeToString(context, showBytes = false)})"
   }
 
   /**
@@ -967,15 +980,38 @@ object PackageUtils {
   fun describeSignature(
     context: Context,
     dateFormat: DateFormat,
-    signature: Signature
+    signature: Signature,
+    sigResult: ApkVerifier.Result?
   ): LibStringItem {
     val bytes = signature.toByteArray()
     val certificate = X509Certificate.getInstance(bytes)
     val serialNumber = "0x${certificate.serialNumber.toString(16)}"
+    val schemes = mutableListOf<String>()
+    sigResult?.let {
+      if (it.isVerifiedUsingV1Scheme) {
+        schemes.add("V1")
+      }
+      if (it.isVerifiedUsingV2Scheme) {
+        schemes.add("V2")
+      }
+      if (it.isVerifiedUsingV3Scheme) {
+        schemes.add("V3")
+      }
+      if (it.isVerifiedUsingV31Scheme) {
+        schemes.add("V3.1")
+      }
+      if (it.isVerifiedUsingV4Scheme) {
+        schemes.add("V4")
+      }
+    }
     val source = buildString {
+      // Signature Scheme Version
+      append(context.getString(R.string.signature_scheme_version))
+      append(":")
+      appendLine(schemes.joinToString(", "))
       // Signature Version
       append(context.getString(R.string.signature_version))
-      append(":v")
+      append(":")
       appendLine(certificate.version + 1)
       // Signature Serial Number
       append(context.getString(R.string.signature_serial_number))

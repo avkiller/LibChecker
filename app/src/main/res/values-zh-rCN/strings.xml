@@ -46,6 +46,7 @@
   <string name="ref_category_shared_uid">共享的 UID</string>
   <string name="ref_category_signatures">签名</string>
   <string name="ref_category_only_not_marked">只展示未标记库</string>
+  <string name="ref_category_action">Action</string>
   <string name="string_kotlin_used">使用了 Kotlin</string>
   <string name="string_kotlin_unused">未使用 Kotlin</string>
   <string name="string_compose_used">使用了 Jetpack Compose</string>
@@ -88,10 +89,12 @@
   <string name="cloud_rules">云端规则</string>
   <string name="dark_mode">深色模式</string>
   <string name="snapshot_keep">快照默认保留规则</string>
+  <string name="export_log">导出日志</string>
   <string name="apk_analytics_summary">当点击一个 APK 文件时打开详情页</string>
   <string name="colorful_icon_summary">部分标记库会呈现为彩色 Logo</string>
   <string name="lib_ref_threshold_summary">只有库引用数量达到阈值的库才显示在列表中</string>
   <string name="reload_apps_summary">当应用列表显示不正常时尝试此选项</string>
+  <string name="export_log_summary">导出应用的日志文件</string>
   <string name="help_docs_summary">学习如何使用 LibChecker</string>
   <string name="join_telegram_group_summary">来一起划水</string>
   <string name="anonymous_statistics_summary">我们使用 Google Firebase 来匿名发送最常被人们使用的标记库和一些使用习惯数据来使得 LibChecker 变得更加实用</string>
@@ -142,6 +145,7 @@
   <string name="rx_kotlin_detail">RxJava 的 Kotlin 扩展</string>
   <string name="permission_not_granted">未授予</string>
   <string name="signature_detail">签名详情</string>
+  <string name="signature_scheme_version">签名方案</string>
   <string name="signature_version">版本</string>
   <string name="signature_serial_number">序列号</string>
   <string name="signature_issuer">发行人</string>
@@ -185,6 +189,9 @@
   <string name="lib_detail_app_install_source_shizuku_not_running_detail">点此跳转到 Shizuku 以启动它</string>
   <string name="lib_detail_app_install_source_shizuku_permission_not_granted">Shizuku 未授权</string>
   <string name="lib_detail_app_install_source_shizuku_permission_not_granted_detail">点此进行 Shizuku 授权以获取安装请求方</string>
+  <string name="lib_detail_elf_info">更多信息</string>
+  <string name="lib_detail_dependency_tip">依赖</string>
+  <string name="lib_detail_entry_points_tip">入口点</string>
   <!--  Toast  -->
   <string name="toast_copied_to_clipboard">已复制到剪贴板</string>
   <string name="toast_not_existing_market">设备中不存在应用市场</string>
