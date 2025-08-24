@@ -29,7 +29,7 @@
   <string name="title_statistics_dialog">%s ABI\'ye sahip uygulamalar</string>
   <string name="title_statistics_dialog_no_native_libs">Yerel kütüphanesi olmayan uygulamalar</string>
   <string name="tab_chart">Grafik</string>
-  <string name="tab_lib_reference_statistics">Kütüphane referansı</string>
+  <string name="tab_lib_reference_statistics">Kütüphane Referansı</string>
   <string name="not_marked_lib">İşaretlenmemiş kütüphane</string>
   <string name="submenu_title_component">Bileşen</string>
   <string name="submenu_title_manifest">Manifest</string>
@@ -89,10 +89,12 @@
   <string name="cloud_rules">Bulut Kuralları</string>
   <string name="dark_mode">Karanlık Mod</string>
   <string name="snapshot_keep">Anlık Görüntü Varsayılan Saklama Kuralı</string>
+  <string name="export_log">Günlüğü Dışa Aktar</string>
   <string name="apk_analytics_summary">APK dosyasına tıkladığınızda ayrıntı sayfasını açar</string>
   <string name="colorful_icon_summary">İşaretlenmiş kütüphanelerin bir kısmı renkli logo olarak görünecek</string>
   <string name="lib_ref_threshold_summary">Sadece kütüphane referans sayısı eşiğe ulaşan kütüphaneler listede gösterilir</string>
   <string name="reload_apps_summary">Uygulama listesi anormal görüntülendiğinde deneyin</string>
+  <string name="export_log_summary">Uygulamanın günlük dosyasını dışa aktar</string>
   <string name="help_docs_summary">LibChecker\'ı nasıl kullanacağınızı öğrenin</string>
   <string name="join_telegram_group_summary">Telegram grubumuza katılın</string>
   <string name="anonymous_statistics_summary">LibChecker\'ı daha pratik hale getirmek için en sık kullanılan işaretli kütüphaneleri ve bazı kullanım alışkanlıkları verilerini anonim olarak göndermek için Google Firebase kullanıyoruz</string>
@@ -143,6 +145,7 @@
   <string name="rx_kotlin_detail">RxJava için Kotlin Uzantıları</string>
   <string name="permission_not_granted">Verilmedi</string>
   <string name="signature_detail">İmza Ayrıntısı</string>
+  <string name="signature_scheme_version">İmza Şeması</string>
   <string name="signature_version">Sürüm</string>
   <string name="signature_serial_number">Seri Numarası</string>
   <string name="signature_issuer">Veren</string>
@@ -186,6 +189,9 @@
   <string name="lib_detail_app_install_source_shizuku_not_running_detail">Başlatmak için Shizuku\'ya atlamak için buraya tıklayın</string>
   <string name="lib_detail_app_install_source_shizuku_permission_not_granted">Shizuku yetkilendirilmedi</string>
   <string name="lib_detail_app_install_source_shizuku_permission_not_granted_detail">Yükleme isteyicisi için Shizuku yetkilendirmesi için buraya tıklayın</string>
+  <string name="lib_detail_elf_info">Ayrıntılı Bilgi</string>
+  <string name="lib_detail_dependency_tip">Bağımlılıklar</string>
+  <string name="lib_detail_entry_points_tip">Giriş Noktaları</string>
   <!--  Toast  -->
   <string name="toast_copied_to_clipboard">Panoya kopyalandı</string>
   <string name="toast_not_existing_market">Mevcut bir uygulama mağazası yok</string>

@@ -18,6 +18,7 @@ import com.absinthe.libchecker.R
 import com.absinthe.libchecker.annotation.ACTION
 import com.absinthe.libchecker.annotation.ACTION_IN_RULES
 import com.absinthe.libchecker.annotation.ACTIVITY
+import com.absinthe.libchecker.annotation.ET_NOT_ELF
 import com.absinthe.libchecker.annotation.NATIVE
 import com.absinthe.libchecker.annotation.PERMISSION
 import com.absinthe.libchecker.annotation.isComponentType
@@ -29,12 +30,14 @@ import com.absinthe.libchecker.features.applist.Referable
 import com.absinthe.libchecker.features.applist.Sortable
 import com.absinthe.libchecker.features.applist.detail.DetailViewModel
 import com.absinthe.libchecker.features.applist.detail.IDetailContainer
+import com.absinthe.libchecker.features.applist.detail.ui.ELFDetailDialogFragment
 import com.absinthe.libchecker.features.applist.detail.ui.EXTRA_PACKAGE_NAME
 import com.absinthe.libchecker.features.applist.detail.ui.LibDetailDialogFragment
 import com.absinthe.libchecker.features.applist.detail.ui.PermissionDetailDialogFragment
 import com.absinthe.libchecker.features.applist.detail.ui.adapter.LibStringAdapter
 import com.absinthe.libchecker.features.applist.detail.ui.impl.ComponentsAnalysisFragment
 import com.absinthe.libchecker.features.applist.detail.ui.impl.MetaDataAnalysisFragment
+import com.absinthe.libchecker.features.applist.detail.ui.impl.NativeAnalysisFragment
 import com.absinthe.libchecker.features.applist.detail.ui.view.EmptyListView
 import com.absinthe.libchecker.features.statistics.bean.LibStringItemChip
 import com.absinthe.libchecker.integrations.anywhere.AnywhereManager
@@ -44,6 +47,7 @@ import com.absinthe.libchecker.integrations.monkeyking.ShareCmpInfo
 import com.absinthe.libchecker.ui.base.BaseAlertDialogBuilder
 import com.absinthe.libchecker.ui.base.BaseFragment
 import com.absinthe.libchecker.utils.extensions.addPaddingTop
+import com.absinthe.libchecker.utils.extensions.doOnMainThreadIdle
 import com.absinthe.libchecker.utils.extensions.dp
 import com.absinthe.libchecker.utils.extensions.getColor
 import com.absinthe.libchecker.utils.extensions.launchLibReferencePage
@@ -51,7 +55,6 @@ import com.absinthe.libchecker.utils.extensions.reverseStrikeThroughAnimation
 import com.absinthe.libchecker.utils.extensions.startStrikeThroughAnimation
 import com.absinthe.libchecker.utils.extensions.unsafeLazy
 import com.absinthe.libraries.utils.utils.AntiShakeUtils
-import com.absinthe.rulesbundle.LCRules
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -273,14 +276,22 @@ abstract class BaseDetailFragment<T : ViewBinding> :
     }
 
     Timber.d("navigateToComponent: componentPosition = $componentPosition")
-    (activity as? IDetailContainer)?.collapseAppBar()
-    getRecyclerView().scrollToPosition(componentPosition.coerceAtMost(adapter.itemCount - 1))
 
-    with(getRecyclerView().layoutManager) {
-      if (this is LinearLayoutManager) {
-        scrollToPositionWithOffset(componentPosition, 0)
-      } else if (this is StaggeredGridLayoutManager) {
-        scrollToPositionWithOffset(componentPosition, 0)
+    doOnMainThreadIdle {
+      (activity as? IDetailContainer)?.collapseAppBar()
+      getRecyclerView().scrollToPosition(componentPosition.coerceAtMost(adapter.itemCount - 1))
+
+      // Calculate better offset to provide improved visual experience for highlighting
+      val recyclerView = getRecyclerView()
+      // Place highlighted item about 1/4 from top for better visibility
+      val centerOffset = recyclerView.height / 4
+
+      with(recyclerView.layoutManager) {
+        if (this is LinearLayoutManager) {
+          scrollToPositionWithOffset(componentPosition, centerOffset)
+        } else if (this is StaggeredGridLayoutManager) {
+          scrollToPositionWithOffset(componentPosition, centerOffset)
+        }
       }
     }
 
@@ -347,8 +358,20 @@ abstract class BaseDetailFragment<T : ViewBinding> :
       VersionCompat.showCopiedOnClipboardToast(context)
     }
 
+    // ELF info
+    if (this is NativeAnalysisFragment && item.item.elfInfo.elfType != ET_NOT_ELF) {
+      arrayAdapter.add(getString(R.string.lib_detail_elf_info))
+      actionMap[arrayAdapter.count - 1] = {
+        ELFDetailDialogFragment.newInstance(
+          packageName = packageName,
+          elfPath = item.item.source.orEmpty(),
+          ruleIcon = item.rule?.iconRes ?: com.absinthe.lc.rulesbundle.R.drawable.ic_sdk_placeholder
+        ).show(childFragmentManager, ELFDetailDialogFragment::class.java.name)
+      }
+    }
+
     // Reference
-    if (this is Referable) {
+    if (this is Referable && !componentName.startsWith(".")) {
       arrayAdapter.add(getString(R.string.tab_lib_reference_statistics))
       actionMap[arrayAdapter.count - 1] = {
         val refName = item.rule?.libName ?: componentName

@@ -30,7 +30,7 @@
   <string name="title_statistics_dialog">Apps with %s ABI</string>
   <string name="title_statistics_dialog_no_native_libs">Apps without native libraries</string>
   <string name="tab_chart">Chart</string>
-  <string name="tab_lib_reference_statistics">Lib reference</string>
+  <string name="tab_lib_reference_statistics">Lib Reference</string>
   <string name="not_marked_lib">Unmarked library</string>
 
   <string name="submenu_title_component">Component</string>
@@ -97,11 +97,13 @@
   <string name="cloud_rules">Cloud Rules</string>
   <string name="dark_mode">Dark Mode</string>
   <string name="snapshot_keep">Snapshot Default Keep Rule</string>
+  <string name="export_log">Export Log</string>
 
   <string name="apk_analytics_summary">Open the detail page when click an APK file</string>
   <string name="colorful_icon_summary">Part of the marked libraries will appear as a colored logo</string>
   <string name="lib_ref_threshold_summary">Only libraries with the number of library references reaching the threshold are displayed in the list</string>
   <string name="reload_apps_summary">Have a try when apps list is shown abnormally</string>
+  <string name="export_log_summary">Export the log file of the app</string>
   <string name="help_docs_summary">Learn how to use LibChecker</string>
   <string name="join_telegram_group_summary">Join our Telegram group</string>
   <string name="anonymous_statistics_summary">We use Google Firebase to anonymously send the most commonly used marked libraries and some usage habits data to make LibChecker more practical</string>
@@ -155,6 +157,7 @@
   <string name="rx_kotlin_detail">Kotlin Extensions for RxJava</string>
   <string name="permission_not_granted">Not Granted</string>
   <string name="signature_detail">Signature Detail</string>
+  <string name="signature_scheme_version">Signature Scheme</string>
   <string name="signature_version">Version</string>
   <string name="signature_serial_number">Serial Number</string>
   <string name="signature_issuer">Issuer</string>
@@ -198,6 +201,9 @@
   <string name="lib_detail_app_install_source_shizuku_not_running_detail">Click here to jump to Shizuku to start it</string>
   <string name="lib_detail_app_install_source_shizuku_permission_not_granted">Shizuku not authorized</string>
   <string name="lib_detail_app_install_source_shizuku_permission_not_granted_detail">Click here for Shizuku authorization for installation requester</string>
+  <string name="lib_detail_elf_info">More Info</string>
+  <string name="lib_detail_dependency_tip">Dependencies</string>
+  <string name="lib_detail_entry_points_tip">Entry Points</string>
 
   <!--  Toast  -->
   <string name="toast_copied_to_clipboard">Copied to clipboard</string>
