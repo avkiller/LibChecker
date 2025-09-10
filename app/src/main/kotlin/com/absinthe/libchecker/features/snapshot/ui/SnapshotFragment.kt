@@ -96,7 +96,6 @@ class SnapshotFragment :
   private var shouldCompare = true and ShootService.isComputing.not()
   private var shootServiceStarted = false
   private var keyword: String = ""
-  private var currentTimeStamp = GlobalValues.snapshotTimestamp
   private var items = emptyList<SnapshotDiffItem>()
 
   private var shootBinder: IShootService? = null
@@ -307,7 +306,6 @@ class SnapshotFragment :
         }
 
         is SnapshotViewModel.Effect.TimeStampChange -> {
-          currentTimeStamp = it.timestamp
           if (it.timestamp != 0L) {
             dashboard.container.tvSnapshotTimestampText.text = viewModel.getFormatDateString(it.timestamp)
             updateSystemProps(dashboard, it.timestamp)
@@ -354,16 +352,21 @@ class SnapshotFragment :
 
     if (!shootServiceStarted && isFragmentVisible()) {
       context?.applicationContext?.also {
-        val intent = Intent(it, ShootService::class.java).apply {
-          setPackage(it.packageName)
+        runCatching {
+          val intent = Intent(it, ShootService::class.java).apply {
+            setPackage(it.packageName)
+          }
+          it.startService(intent)
+          it.bindService(
+            intent,
+            shootServiceConnection,
+            Service.BIND_AUTO_CREATE
+          )
+        }.onFailure { t ->
+          Timber.e(t)
+        }.onSuccess {
+          shootServiceStarted = true
         }
-        it.startService(intent)
-        it.bindService(
-          intent,
-          shootServiceConnection,
-          Service.BIND_AUTO_CREATE
-        )
-        shootServiceStarted = true
       }
     }
 
@@ -373,7 +376,7 @@ class SnapshotFragment :
       viewModel.compareDiff(GlobalValues.snapshotTimestamp)
     }
 
-    if (currentTimeStamp != GlobalValues.snapshotTimestamp) {
+    if (viewModel.currentTimeStamp != GlobalValues.snapshotTimestamp) {
       viewModel.changeTimeStamp(GlobalValues.snapshotTimestamp)
       flip(VF_LOADING)
       viewModel.compareDiff(GlobalValues.snapshotTimestamp, shouldClearDiff = true)
@@ -508,10 +511,7 @@ class SnapshotFragment :
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
           )
-          val paddingHorizontal =
-            context.getDimensionByAttr(com.google.android.material.R.attr.dialogPreferredPadding)
-              .toInt()
-          it.setPadding(paddingHorizontal, 0, paddingHorizontal, 0)
+          it.setPadding(24.dp, 0, 24.dp, 0)
           it.text =
             HtmlCompat.fromHtml(getString(R.string.snapshot_scheme_tip, scheme), 0)
           it.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -629,7 +629,7 @@ class SnapshotFragment :
       binding.list.smoothScrollToPosition(0)
     } else {
       flip(VF_LOADING)
-      viewModel.compareDiff(currentTimeStamp)
+      viewModel.compareDiff(GlobalValues.snapshotTimestamp)
     }
   }
 
