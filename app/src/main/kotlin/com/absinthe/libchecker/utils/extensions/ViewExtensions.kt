@@ -6,7 +6,8 @@ import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.res.Resources
 import android.graphics.Bitmap
-import android.graphics.drawable.BitmapDrawable
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.text.Spannable
 import android.text.SpannableString
 import android.text.SpannableStringBuilder
@@ -16,15 +17,18 @@ import android.text.style.StrikethroughSpan
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.LinearInterpolator
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.core.content.FileProvider
+import androidx.core.graphics.drawable.toBitmap
 import androidx.core.view.children
 import androidx.core.view.isVisible
 import androidx.viewpager2.widget.ViewPager2
 import com.absinthe.libchecker.BuildConfig
 import com.absinthe.libchecker.compat.VersionCompat
 import com.absinthe.libchecker.constant.Constants
+import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libraries.utils.extensions.addPaddingBottom
 import com.absinthe.libraries.utils.extensions.addPaddingEnd
 import com.absinthe.libraries.utils.extensions.addPaddingStart
@@ -32,6 +36,7 @@ import com.absinthe.libraries.utils.extensions.addPaddingTop
 import com.absinthe.libraries.utils.utils.UiUtils
 import java.io.File
 import rikka.core.util.ClipboardUtils
+import timber.log.Timber
 
 fun View.setLongClickCopiedToClipboard(text: CharSequence) {
   setOnLongClickListener {
@@ -188,13 +193,13 @@ fun TextView.reverseStrikeThroughAnimation(): ValueAnimator {
 }
 
 fun ImageView.copyToClipboard() {
-  val drawable = (drawable as? BitmapDrawable)?.bitmap ?: return
+  val bitmap = runCatching { drawable.toBitmap() }.getOrNull() ?: return
   val iconFile = File(context.externalCacheDir, Constants.TEMP_ICON)
   if (!iconFile.exists()) {
     iconFile.createNewFile()
   }
   iconFile.outputStream().use {
-    drawable.compress(Bitmap.CompressFormat.PNG, 100, it)
+    bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
   }
   val uri = FileProvider.getUriForFile(
     context,
@@ -240,3 +245,40 @@ val View.end: Int
 
 fun View?.visibleWidth() = if (this != null && isVisible) measuredWidth else 0
 fun View?.visibleHeight() = if (this != null && isVisible) measuredHeight else 0
+
+fun View.animatedBlurAction(action: () -> Unit) {
+  var hasActed = false
+  var supportBlur = OsUtils.atLeastS()
+  val animator = ValueAnimator.ofFloat(0f, 16f).apply {
+    duration = 300L
+    interpolator = LinearInterpolator()
+    repeatCount = 1
+    repeatMode = ValueAnimator.REVERSE
+
+    addUpdateListener { animation ->
+      val blurRadius = animation.animatedValue as Float
+      val progress = animation.animatedFraction
+      if (supportBlur) {
+        runCatching {
+          setRenderEffect(
+            RenderEffect.createBlurEffect(
+              blurRadius,
+              blurRadius,
+              Shader.TileMode.DECAL
+            )
+          )
+        }.onFailure {
+          supportBlur = false
+          Timber.e(it)
+        }
+      } else {
+        alpha = 1f - progress
+      }
+      if (animation.animatedFraction > 0.95f && !hasActed) {
+        hasActed = true
+        action()
+      }
+    }
+  }
+  animator.start()
+}
