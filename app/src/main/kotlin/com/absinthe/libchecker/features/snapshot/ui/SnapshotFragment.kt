@@ -38,6 +38,7 @@ import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.constant.GlobalValues
 import com.absinthe.libchecker.constant.LCUris
 import com.absinthe.libchecker.constant.options.SnapshotOptions
+import com.absinthe.libchecker.data.app.LocalAppDataSource
 import com.absinthe.libchecker.data.app.PackageChangeState
 import com.absinthe.libchecker.databinding.FragmentSnapshotBinding
 import com.absinthe.libchecker.features.album.ui.AlbumActivity
@@ -63,12 +64,15 @@ import com.absinthe.libchecker.ui.base.IAppBarContainer
 import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.Telemetry
 import com.absinthe.libchecker.utils.Toasty
+import com.absinthe.libchecker.utils.UiUtils
+import com.absinthe.libchecker.utils.UiUtils.toCircularBitmap
 import com.absinthe.libchecker.utils.extensions.addPaddingTop
 import com.absinthe.libchecker.utils.extensions.doOnMainThreadIdle
 import com.absinthe.libchecker.utils.extensions.dp
 import com.absinthe.libchecker.utils.extensions.setLongClickCopiedToClipboard
 import com.absinthe.libchecker.utils.extensions.setSpaceFooterView
 import com.absinthe.libchecker.utils.fromJson
+import com.absinthe.libchecker.view.app.RingDotsView
 import com.absinthe.libraries.utils.utils.AntiShakeUtils
 import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
@@ -170,7 +174,7 @@ class SnapshotFragment :
                   flip(VF_LOADING)
                   dismiss()
                 }
-                viewModel.compareDiff(item.timestamp, shouldClearDiff = true)
+                viewModel.compareDiff(context, item.timestamp, shouldClearDiff = true)
               }
             }
           dialog.show(
@@ -260,6 +264,23 @@ class SnapshotFragment :
           adapter.setSpaceFooterView()
         }
       }
+      loading.setHighlightIconProvider(object : RingDotsView.HighlightIconProvider {
+        override suspend fun produce(emitter: RingDotsView.HighlightIconEmitter) {
+          val applications = LocalAppDataSource.getApplicationList()
+          val defaultIcon = context.packageManager.defaultActivityIcon
+          while (true) {
+            if (!loading.isHighlightAnimationAvailable()) {
+              break
+            }
+            val ai = applications.random().applicationInfo ?: continue
+            val drawable = ai.loadIcon(context.packageManager)
+              ?.takeIf { icon -> !UiUtils.drawablesAreEqual(icon, defaultIcon) }
+              ?: continue
+
+            emitter.emit(drawable.toCircularBitmap())
+          }
+        }
+      })
     }
 
     viewModel.apply {
@@ -356,9 +377,10 @@ class SnapshotFragment :
 
   override fun onResume() {
     super.onResume()
+    val context = context ?: return
 
     if (!shootServiceStarted && isFragmentVisible()) {
-      context?.applicationContext?.also {
+      context.applicationContext?.also {
         runCatching {
           val intent = Intent(it, ShootService::class.java).apply {
             setPackage(it.packageName)
@@ -380,13 +402,13 @@ class SnapshotFragment :
     if (GlobalValues.trackItemsChanged) {
       GlobalValues.trackItemsChanged = false
       flip(VF_LOADING)
-      viewModel.compareDiff(GlobalValues.snapshotTimestamp)
+      viewModel.compareDiff(context, GlobalValues.snapshotTimestamp)
     }
 
     if (viewModel.currentTimeStamp != GlobalValues.snapshotTimestamp) {
       viewModel.changeTimeStamp(GlobalValues.snapshotTimestamp)
       flip(VF_LOADING)
-      viewModel.compareDiff(GlobalValues.snapshotTimestamp, shouldClearDiff = true)
+      viewModel.compareDiff(context, GlobalValues.snapshotTimestamp, shouldClearDiff = true)
     }
 
     if (shouldCompare) {
@@ -398,15 +420,20 @@ class SnapshotFragment :
     }
 
     if (hasPackageChanged()) {
-      viewModel.compareDiff(GlobalValues.snapshotTimestamp)
+      viewModel.compareDiff(context, GlobalValues.snapshotTimestamp)
     }
     (activity as? IAppBarContainer)?.setLiftOnScrollTargetView(binding.list)
+
+    if (binding.vfContainer.displayedChild == VF_LOADING) {
+      binding.loading.start()
+    }
   }
 
   override fun onPause() {
     super.onPause()
     advancedMenuBSDFragment?.dismiss()
     advancedMenuBSDFragment = null
+    binding.loading.stop()
   }
 
   override fun onDestroyView() {
@@ -582,11 +609,13 @@ class SnapshotFragment :
       return
     }
     if (child == VF_LOADING) {
-      binding.loading.resumeAnimation()
+      if (isResumed) {
+        binding.loading.start()
+      }
       menu?.findItem(R.id.save)?.isVisible = false
       menu?.findItem(R.id.search)?.isVisible = false
     } else {
-      binding.loading.pauseAnimation()
+      binding.loading.stop()
       binding.list.scrollToPosition(0)
       menu?.findItem(R.id.save)?.isVisible = true
       menu?.findItem(R.id.search)?.isVisible = true
@@ -596,11 +625,12 @@ class SnapshotFragment :
   }
 
   private fun compareDiff() {
+    val context = context ?: return
     viewModel.changeTimeStamp(GlobalValues.snapshotTimestamp)
     isSnapshotDatabaseItemsReady = true
 
     viewModel.getDashboardCount(GlobalValues.snapshotTimestamp, true)
-    viewModel.compareDiff(GlobalValues.snapshotTimestamp)
+    viewModel.compareDiff(context, GlobalValues.snapshotTimestamp)
     isSnapshotDatabaseItemsReady = false
   }
 
@@ -613,7 +643,8 @@ class SnapshotFragment :
         packageQueue.take()?.let {
           Timber.d("Dequeue package: $it")
           val packageName = it.getActualPackageInfo().packageName
-          viewModel.compareItemDiff(GlobalValues.snapshotTimestamp, packageName)
+          val packageManager = context?.packageManager ?: return@let
+          viewModel.compareItemDiff(packageManager, GlobalValues.snapshotTimestamp, packageName)
         }
       }
     }
@@ -634,11 +665,12 @@ class SnapshotFragment :
   }
 
   override fun onReturnTop() {
+    val context = context ?: return
     if (binding.list.canScrollVertically(-1)) {
       binding.list.smoothScrollToPosition(0)
     } else {
       flip(VF_LOADING)
-      viewModel.compareDiff(GlobalValues.snapshotTimestamp)
+      viewModel.compareDiff(context, GlobalValues.snapshotTimestamp)
     }
   }
 

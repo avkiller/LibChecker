@@ -14,12 +14,15 @@ import com.absinthe.libchecker.compat.IntentCompat
 import com.absinthe.libchecker.compat.PackageManagerCompat
 import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.features.applist.detail.IDetailContainer
+import com.absinthe.libchecker.utils.Toasty
 import com.absinthe.libchecker.utils.UiUtils
 import com.absinthe.libchecker.utils.apk.APKSParser
+import com.absinthe.libchecker.utils.apk.ApkPreview
 import com.absinthe.libchecker.utils.apk.XAPKParser
 import com.absinthe.libchecker.utils.showToast
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okio.buffer
@@ -62,7 +65,11 @@ class ApkDetailActivity :
           IntentCompat.getParcelableExtra<Uri>(intent, Intent.EXTRA_STREAM)?.let { stream ->
             initPackage(stream)
           } ?: run {
-            finish()
+            intent.getStringExtra(Intent.EXTRA_TEXT)?.let { url ->
+              initAPKPreview(url)
+            } ?: run {
+              finish()
+            }
           }
         }
 
@@ -166,5 +173,30 @@ class ApkDetailActivity :
   private fun initAPKSPackage(file: File, flags: Int): PackageInfo {
     val parser = APKSParser(file, flags)
     return parser.getPackageInfo() ?: throw PackageParserException()
+  }
+
+  private fun initAPKPreview(url: String) {
+    Timber.d("initAPKPreview: $url")
+    viewModel.isApk = false
+    viewModel.isApkPreview = true
+
+    val dialog = UiUtils.createLoadingDialog(this)
+    dialog.show()
+
+    lifecycleScope.launch(Dispatchers.IO) {
+      val previewInfo = ApkPreview(url).parse().onFailure {
+        Timber.e(it)
+        withContext(Dispatchers.Main) {
+          Toasty.showLong(this@ApkDetailActivity, it.toString())
+          finish()
+        }
+      }.getOrNull() ?: return@launch
+      viewModel.apkPreviewInfo = previewInfo
+
+      withContext(Dispatchers.Main) {
+        onPackageInfoAvailable(PackageInfo(), null)
+        dialog.dismiss()
+      }
+    }
   }
 }
