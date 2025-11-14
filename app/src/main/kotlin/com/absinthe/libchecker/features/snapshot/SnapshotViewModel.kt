@@ -4,6 +4,11 @@ import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.text.style.ForegroundColorSpan
+import androidx.core.graphics.ColorUtils
+import androidx.core.text.buildSpannedString
+import androidx.core.text.inSpans
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.absinthe.libchecker.R
@@ -48,6 +53,7 @@ import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -532,8 +538,30 @@ class SnapshotViewModel : ViewModel() {
     for (item in tempNewList) {
       oldList.find { it.name == item.name }?.let {
         if (it.size != item.size) {
-          val extra =
-            "${it.size.sizeToString(context)} $ARROW ${item.size.sizeToString(context)}"
+          val diffSize = item.size - it.size
+          val extra = buildSpannedString {
+            append("${it.size.sizeToString(context)} $ARROW ${item.size.sizeToString(context)}")
+            appendLine()
+            inSpans(ForegroundColorSpan(ColorUtils.setAlphaComponent(Color.BLACK, 165))) {
+              if (diffSize > 0) {
+                append("+")
+              }
+              append(diffSize.sizeToString(context))
+              append(", ")
+              if (diffSize > 0) {
+                append("+")
+              }
+              val percentage = (diffSize.toFloat() / it.size)
+              if (abs(percentage) < 0.001f) {
+                if (percentage < 0) {
+                  append("-")
+                }
+                append("<0.1%")
+              } else {
+                append(String.format(Locale.getDefault(), "%.1f%%", percentage * 100))
+              }
+            }
+          }
           list.add(
             SnapshotDetailItem(
               it.name,
@@ -702,10 +730,10 @@ class SnapshotViewModel : ViewModel() {
   }
 
   data class CompareDiffNode(
-    var added: Boolean = false,
-    var removed: Boolean = false,
-    var changed: Boolean = false,
-    var moved: Boolean = false
+    var added: Int = 0,
+    var removed: Int = 0,
+    var changed: Int = 0,
+    var moved: Int = 0
   )
 
   private fun compareDiffIndicator(item: SnapshotDiffItem): CompareDiffNode {
@@ -763,7 +791,7 @@ class SnapshotViewModel : ViewModel() {
     newList: List<LibStringItem>?
   ): CompareDiffNode {
     if (newList == null) {
-      return CompareDiffNode(removed = true)
+      return CompareDiffNode(removed = Int.MAX_VALUE)
     }
 
     val tempOldList = oldList.toMutableList()
@@ -777,7 +805,7 @@ class SnapshotViewModel : ViewModel() {
       nextItem = iterator.next()
       oldList.find { it.name == nextItem.name }?.let {
         if (it.size != nextItem.size) {
-          node.changed = true
+          node.changed += 1
         }
         iterator.remove()
         tempOldList.remove(tempOldList.find { item -> item.name == nextItem.name })
@@ -785,17 +813,17 @@ class SnapshotViewModel : ViewModel() {
     }
 
     if (tempOldList.isNotEmpty()) {
-      node.removed = true
+      node.removed = tempOldList.size
     }
     if (tempNewList.isNotEmpty()) {
-      node.added = true
+      node.added = tempNewList.size
     }
     return node
   }
 
   private fun compareComponentsDiff(diffNode: SnapshotDiffItem.DiffNode<String>): CompareDiffNode {
     if (diffNode.new == null) {
-      return CompareDiffNode(removed = true)
+      return CompareDiffNode(removed = Int.MAX_VALUE)
     }
 
     val oldSet = diffNode.old.fromJson<List<String>>(
@@ -815,7 +843,7 @@ class SnapshotViewModel : ViewModel() {
 
     for (item in addList) {
       removeList.find { it.substringAfterLast(".") == item.substringAfterLast(".") }?.let {
-        node.moved = true
+        node.moved += 1
         pendingRemovedOldSet += it
         pendingRemovedNewSet += item
       }
@@ -824,10 +852,10 @@ class SnapshotViewModel : ViewModel() {
     addList.removeAll(pendingRemovedNewSet)
 
     if (removeList.isNotEmpty()) {
-      node.removed = true
+      node.removed = removeList.size
     }
     if (addList.isNotEmpty()) {
-      node.added = true
+      node.added = addList.size
     }
     return node
   }
@@ -837,7 +865,7 @@ class SnapshotViewModel : ViewModel() {
     newSet: Set<String>?
   ): CompareDiffNode {
     if (newSet == null) {
-      return CompareDiffNode(removed = true)
+      return CompareDiffNode(removed = Int.MAX_VALUE)
     }
 
     val removeList = oldSet - newSet
@@ -845,10 +873,10 @@ class SnapshotViewModel : ViewModel() {
     val node = CompareDiffNode()
 
     if (removeList.isNotEmpty()) {
-      node.removed = true
+      node.removed = removeList.size
     }
     if (addList.isNotEmpty()) {
-      node.added = true
+      node.added = addList.size
     }
     return node
   }
@@ -858,7 +886,7 @@ class SnapshotViewModel : ViewModel() {
     newList: List<LibStringItem>?
   ): CompareDiffNode {
     if (newList == null) {
-      return CompareDiffNode(removed = true)
+      return CompareDiffNode(removed = Int.MAX_VALUE)
     }
 
     val tempOldList = oldList.toMutableList()
@@ -872,7 +900,7 @@ class SnapshotViewModel : ViewModel() {
       nextItem = iterator.next()
       oldList.find { it.name == nextItem.name }?.let {
         if (it.source != nextItem.source) {
-          node.changed = true
+          node.changed += 1
         }
         iterator.remove()
         tempOldList.remove(tempOldList.find { item -> item.name == nextItem.name })
@@ -880,10 +908,10 @@ class SnapshotViewModel : ViewModel() {
     }
 
     if (tempOldList.isNotEmpty()) {
-      node.removed = true
+      node.removed = tempOldList.size
     }
     if (tempNewList.isNotEmpty()) {
-      node.added = true
+      node.added = tempNewList.size
     }
     return node
   }

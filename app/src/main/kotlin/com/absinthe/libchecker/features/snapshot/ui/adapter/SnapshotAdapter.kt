@@ -27,14 +27,17 @@ import com.absinthe.libchecker.utils.LCAppUtils
 import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.PackageUtils
 import com.absinthe.libchecker.utils.extensions.PREINSTALLED_TIMESTAMP
+import com.absinthe.libchecker.utils.extensions.dp
 import com.absinthe.libchecker.utils.extensions.getColorByAttr
 import com.absinthe.libchecker.utils.extensions.getDrawable
 import com.absinthe.libchecker.utils.extensions.setAlphaForAll
+import com.absinthe.libchecker.utils.extensions.setSmoothRoundCorner
 import com.absinthe.libchecker.utils.extensions.sizeToString
 import com.absinthe.libchecker.utils.extensions.unsafeLazy
 import com.chad.library.adapter.base.viewholder.BaseViewHolder
 import java.text.SimpleDateFormat
 import java.util.Locale
+import kotlin.math.abs
 
 const val ARROW = "→"
 const val ARROW_REVERT = "←"
@@ -61,6 +64,7 @@ class SnapshotAdapter(private val cardMode: CardMode = CardMode.NORMAL) : Highli
   override fun convert(holder: BaseViewHolder, item: SnapshotDiffItem) {
     (holder.itemView as SnapshotItemView).apply {
       if (cardMode == CardMode.DEMO || cardMode == CardMode.GET_APP_UPDATE) {
+        setSmoothRoundCorner(16.dp)
         strokeColor = context.getColorByAttr(com.google.android.material.R.attr.colorOutline)
       } else {
         strokeColor = Color.TRANSPARENT
@@ -92,10 +96,19 @@ class SnapshotAdapter(private val cardMode: CardMode = CardMode.NORMAL) : Highli
       }
 
       stateIndicator.apply {
-        added = item.added && !isNewOrDeleted
-        removed = item.removed && !isNewOrDeleted
-        changed = item.changed && !isNewOrDeleted
-        moved = item.moved && !isNewOrDeleted
+        if (cardMode == CardMode.DEMO) {
+          startDemoAnimation()
+        } else {
+          stopDemoAnimation()
+          if (isNewOrDeleted) {
+            added = false
+            removed = false
+            changed = false
+            moved = false
+          } else {
+            setSnapshotStateCounts(item.added, item.removed, item.changed, item.moved)
+          }
+        }
       }
 
       val appNameLabel = buildSpannedString {
@@ -159,12 +172,28 @@ class SnapshotAdapter(private val cardMode: CardMode = CardMode.NORMAL) : Highli
           if (item.packageSizeDiff.new != null) {
             val diffSize = item.packageSizeDiff.new - item.packageSizeDiff.old
             val diffSizeText = buildString {
-              append(if (diffSize > 0) "+" else "")
+              if (diffSize > 0) {
+                append("+")
+              }
               append(diffSize.sizeToString(context))
+              append(", ")
+              if (diffSize > 0) {
+                append("+")
+              }
+              val percentage = (diffSize.toFloat() / item.packageSizeDiff.old)
+              if (abs(percentage) < 0.001f) {
+                if (percentage < 0) {
+                  append("-")
+                }
+                append("<0.1%")
+              } else {
+                append(String.format(Locale.getDefault(), "%.1f%%", percentage * 100))
+              }
             }
 
             if (diffSize != 0L) {
-              append(", $diffSizeText")
+              appendLine()
+              append(diffSizeText)
             }
           }
         }

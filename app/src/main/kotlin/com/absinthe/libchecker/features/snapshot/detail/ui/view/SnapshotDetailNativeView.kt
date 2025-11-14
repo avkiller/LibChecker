@@ -16,10 +16,13 @@ import androidx.core.view.marginStart
 import androidx.core.view.marginTop
 import com.absinthe.libchecker.R
 import com.absinthe.libchecker.constant.GlobalValues
+import com.absinthe.libchecker.utils.extensions.dp
 import com.absinthe.libchecker.utils.extensions.getDimensionPixelSize
+import com.absinthe.libchecker.utils.extensions.setSmoothRoundCorner
 import com.absinthe.libchecker.utils.extensions.toColorStateList
 import com.absinthe.libchecker.utils.extensions.visibleHeight
 import com.absinthe.libchecker.view.AViewGroup
+import com.absinthe.libraries.utils.utils.UiUtils
 import com.absinthe.rulesbundle.Rule
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.chip.Chip
@@ -31,6 +34,10 @@ class SnapshotDetailNativeView(context: Context) : MaterialCardView(context) {
   }
 
   init {
+    if (UiUtils.isDarkMode()) {
+      strokeColor = Color.TRANSPARENT
+    }
+    setSmoothRoundCorner(16.dp)
     addView(container)
   }
 
@@ -86,33 +93,31 @@ class SnapshotDetailNativeView(context: Context) : MaterialCardView(context) {
       chip?.setOnClickListener(listener)
     }
 
-    fun setChip(rule: Rule?, colorRes: Int) {
+    fun setChip(rule: Rule?, color: Int) {
       if (rule == null) {
         if (chip != null) {
           removeView(chip)
           chip = null
         }
       } else {
-        if (chip == null) {
-          chip = Chip(context).apply {
+        (
+          chip ?: Chip(context).apply {
             layoutParams = LayoutParams(
               ViewGroup.LayoutParams.WRAP_CONTENT,
               ViewGroup.LayoutParams.WRAP_CONTENT
-            ).also {
-              it.topMargin = 4.dp
-            }
+            )
             setTextColor(Color.BLACK)
             chipStrokeColor = ColorStateList.valueOf(("#20000000".toColorInt()))
             chipStrokeWidth = 1.dp.toFloat()
             chipStartPadding = 10.dp.toFloat()
             setPadding(paddingStart, 2.dp, paddingEnd, 2.dp)
             addView(this)
+            chip = this
           }
-        }
-        chip!!.apply {
+          ).apply {
           setChipIconResource(rule.iconRes)
           text = rule.label
-          chipBackgroundColor = colorRes.toColorStateList(context)
+          chipBackgroundColor = ColorStateList.valueOf(color)
 
           if (!GlobalValues.isColorfulIcon && !rule.isSimpleColorIcon) {
             val icon = chipIcon
