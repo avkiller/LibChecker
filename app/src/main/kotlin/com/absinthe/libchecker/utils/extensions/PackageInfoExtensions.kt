@@ -260,8 +260,16 @@ fun PackageInfo.getPackageSize(includeSplits: Boolean): Long {
  * @return True if is a Xposed module
  */
 fun PackageInfo.isXposedModule(): Boolean {
-  val metaData = applicationInfo?.metaData ?: return false
-  return metaData.getBoolean("xposedmodule") || metaData.containsKey("xposedminversion")
+  val metaData = applicationInfo?.metaData
+  if (metaData != null && (metaData.getBoolean("xposedmodule") || metaData.containsKey("xposedminversion"))) {
+    return true
+  }
+  val sourceDir = applicationInfo?.sourceDir ?: return false
+  return runCatching {
+    ZipFileCompat(File(sourceDir)).use {
+      it.getEntry("META-INF/xposed/module.prop") != null
+    }
+  }.getOrDefault(false)
 }
 
 /**
@@ -359,10 +367,13 @@ fun PackageInfo.getFeatures(): Int {
  * @return True if is using 32-bit ABI
  */
 fun ApplicationInfo.isUse32BitAbi(): Boolean {
-  runCatching {
-    val demands = ManifestReader.getManifestProperties(File(sourceDir), arrayOf("use32bitAbi"))
-    return demands["use32bitAbi"] as? Boolean == true
-  }.getOrNull() ?: return false
+  return runCatching {
+    val demands = ManifestReader.getManifestProperties(
+      File(sourceDir),
+      arrayOf("use32bitAbi")
+    )
+    demands["use32bitAbi"] as? Boolean == true
+  }.getOrElse { false }
 }
 
 /**
@@ -819,13 +830,13 @@ fun PackageInfo.isArchivedPackage(): Boolean {
  * https://source.android.com/docs/core/architecture/16kb-page-size/16kb-backcompat-option
  */
 fun PackageInfo.isPageSizeCompat(): Boolean {
-  runCatching {
+  return runCatching {
     val demands = ManifestReader.getManifestProperties(
       File(applicationInfo!!.sourceDir),
       arrayOf("pageSizeCompat")
     )
-    return demands["pageSizeCompat"] as? String == "enabled"
-  }.getOrNull() ?: return false
+    demands["pageSizeCompat"] as? String == "enabled"
+  }.getOrElse { false }
 }
 
 fun PackageInfo.getSignatureSchemes(): ApkVerifier.Result? {
