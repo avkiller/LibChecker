@@ -18,10 +18,13 @@ import timber.log.Timber
 
 class ApkPreview(val url: String) {
   private val client = ApiManager.okHttpClient
-  private val httpUrl = url.toHttpUrlOrNull() ?: throw IllegalArgumentException("Invalid URL: $url")
+  private val httpUrl = url.toHttpUrlOrNull()
   private val elfMap: MutableMap<Int, MutableList<Pair<String, Int>>> = mutableMapOf()
 
   fun parse(): Result<ApkPreviewInfo> = runCatching {
+    if (httpUrl == null) {
+      throw IllegalArgumentException("Invalid URL: $url")
+    }
     val recorder = TimeRecorder().apply { start() }
     val metadata = fetchMetadata()
 
@@ -329,18 +332,30 @@ class ApkPreview(val url: String) {
   }
 
   private fun fetchMetadata(): FileMetadata {
-    val headRequest = newRequestBuilder().head().build()
-    val headResult = runCatching { executeRequest(headRequest) }.getOrNull()
+    if (httpUrl == null) {
+      throw IllegalArgumentException("Invalid URL: $url")
+    }
+    val isAwsPresignedUrl = httpUrl.queryParameterNames.any { it.startsWith("X-Amz-") }
 
-    headResult?.use { response ->
-      if (response.isSuccessful) {
-        val contentLength = response.header("Content-Length")?.toLongOrNull() ?: -1L
-        val supportsRange =
-          response.header("Accept-Ranges")?.contains("bytes", ignoreCase = true) == true
-        return FileMetadata(contentLength, supportsRange)
-      }
-      if (response.code != HttpURLConnection.HTTP_BAD_METHOD && response.code != HttpURLConnection.HTTP_NOT_IMPLEMENTED) {
-        error("Failed to fetch metadata for $url with HEAD: ${response.code}")
+    if (!isAwsPresignedUrl) {
+      val headRequest = newRequestBuilder().head().build()
+      val headResult = runCatching { executeRequest(headRequest) }.getOrNull()
+
+      headResult?.use { response ->
+        if (response.isSuccessful) {
+          val contentLength = response.header("Content-Length")?.toLongOrNull() ?: -1L
+          val supportsRange =
+            response.header("Accept-Ranges")?.contains("bytes", ignoreCase = true) == true
+          return FileMetadata(contentLength, supportsRange)
+        }
+        if (response.code != HttpURLConnection.HTTP_BAD_REQUEST &&
+          response.code != HttpURLConnection.HTTP_UNAUTHORIZED &&
+          response.code != HttpURLConnection.HTTP_FORBIDDEN &&
+          response.code != HttpURLConnection.HTTP_BAD_METHOD &&
+          response.code != HttpURLConnection.HTTP_NOT_IMPLEMENTED
+        ) {
+          error("Failed to fetch metadata for $url with HEAD: ${response.code}")
+        }
       }
     }
 
@@ -494,7 +509,7 @@ class ApkPreview(val url: String) {
   }
 
   private fun newRequestBuilder(): Request.Builder = Request.Builder()
-    .url(httpUrl)
+    .url(httpUrl!!)
     .header("Accept-Encoding", "identity")
 
   private fun executeRequest(request: Request) = try {
