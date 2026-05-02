@@ -10,10 +10,10 @@ import com.absinthe.libchecker.features.chart.OsVersionAxisFormatter
 import com.absinthe.libchecker.utils.PackageUtils
 import com.absinthe.libchecker.utils.UiUtils
 import com.absinthe.libchecker.utils.extensions.getColorByAttr
-import com.github.mikephil.charting.charts.BarChart
-import com.github.mikephil.charting.data.BarData
-import com.github.mikephil.charting.data.BarDataSet
-import com.github.mikephil.charting.data.BarEntry
+import info.appdev.charting.charts.BarChart
+import info.appdev.charting.data.BarData
+import info.appdev.charting.data.BarDataSet
+import info.appdev.charting.data.BarEntryFloat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -25,7 +25,7 @@ class MinApiChartDataSource(items: List<LCItem>) :
   override suspend fun fillChartView(chartView: BarChart, onProgressUpdated: (Int) -> Unit) {
     withContext(Dispatchers.Default) {
       val context = chartView.context ?: return@withContext
-      val entries: ArrayList<BarEntry> = ArrayList()
+      val entries: ArrayList<BarEntryFloat> = ArrayList()
 
       var packageInfo: PackageInfo
       var minSdk: Int
@@ -48,12 +48,12 @@ class MinApiChartDataSource(items: List<LCItem>) :
       val legendList = mutableListOf<String>()
       var index = 0
       classifiedMap.forEach { entry ->
-        entries.add(BarEntry(index.toFloat(), entry.value.size.toFloat()))
+        entries.add(BarEntryFloat(index.toFloat(), entry.value.size.toFloat()))
         legendList.add(entry.key.toString())
         index++
       }
       val dataSet = BarDataSet(entries, "").apply {
-        setDrawIcons(false)
+        isDrawIcons = false
         valueFormatter = IntegerFormatter()
       }
 

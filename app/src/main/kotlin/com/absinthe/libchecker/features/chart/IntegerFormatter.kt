@@ -1,10 +1,10 @@
 package com.absinthe.libchecker.features.chart
 
-import com.github.mikephil.charting.components.AxisBase
-import com.github.mikephil.charting.data.Entry
-import com.github.mikephil.charting.formatter.IAxisValueFormatter
-import com.github.mikephil.charting.formatter.IValueFormatter
-import com.github.mikephil.charting.utils.ViewPortHandler
+import info.appdev.charting.components.AxisBase
+import info.appdev.charting.data.EntryFloat
+import info.appdev.charting.formatter.IAxisValueFormatter
+import info.appdev.charting.formatter.IValueFormatter
+import info.appdev.charting.utils.ViewPortHandler
 import java.text.DecimalFormat
 
 class IntegerFormatter :
@@ -19,7 +19,7 @@ class IntegerFormatter :
 
   override fun getFormattedValue(
     value: Float,
-    entry: Entry?,
+    entryFloat: EntryFloat?,
     dataSetIndex: Int,
     viewPortHandler: ViewPortHandler?
   ): String {

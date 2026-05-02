@@ -8,12 +8,12 @@ import com.absinthe.libchecker.database.entity.LCItem
 import com.absinthe.libchecker.features.chart.BaseChartDataSource
 import com.absinthe.libchecker.features.chart.ChartSourceItem
 import com.absinthe.libchecker.utils.extensions.getColorByAttr
-import com.github.mikephil.charting.charts.PieChart
-import com.github.mikephil.charting.data.PieData
-import com.github.mikephil.charting.data.PieDataSet
-import com.github.mikephil.charting.data.PieEntry
-import com.github.mikephil.charting.formatter.PercentFormatter
-import com.github.mikephil.charting.utils.MPPointF
+import info.appdev.charting.charts.PieChart
+import info.appdev.charting.data.PieData
+import info.appdev.charting.data.PieDataSet
+import info.appdev.charting.data.PieEntryFloat
+import info.appdev.charting.formatter.PercentFormatter
+import info.appdev.charting.utils.PointF
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -27,7 +27,7 @@ class KotlinChartDataSource(items: List<LCItem>) : BaseChartDataSource<PieChart>
         context.resources.getString(R.string.string_kotlin_used),
         context.resources.getString(R.string.string_kotlin_unused)
       )
-      val entries: ArrayList<PieEntry> = ArrayList()
+      val entries: ArrayList<PieEntryFloat> = ArrayList()
       val colorOnSurface = context.getColorByAttr(com.google.android.material.R.attr.colorOnSurface)
       val classifiedList = listOf(mutableListOf<LCItem>(), mutableListOf())
 
@@ -53,13 +53,13 @@ class KotlinChartDataSource(items: List<LCItem>) : BaseChartDataSource<PieChart>
       // the chart.
       val legendList = mutableListOf<String>()
       for (i in parties.indices) {
-        entries.add(PieEntry(classifiedList[i].size.toFloat(), parties[i % parties.size]))
+        entries.add(PieEntryFloat(classifiedList[i].size.toFloat(), parties[i % parties.size]))
         legendList.add(parties[i % parties.size])
       }
       val dataSet = PieDataSet(entries, "").apply {
-        setDrawIcons(false)
+        isDrawIcons = false
         sliceSpace = 3f
-        iconsOffset = MPPointF(0f, 40f)
+        iconsOffset = PointF(0f, 40f)
         selectionShift = 5f
         xValuePosition = PieDataSet.ValuePosition.OUTSIDE_SLICE
         yValuePosition = PieDataSet.ValuePosition.OUTSIDE_SLICE
