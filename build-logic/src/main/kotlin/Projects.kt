@@ -90,7 +90,8 @@ private data class ProjectVersion(
 )
 
 private fun Project.resolveProjectVersion(): ProjectVersion {
-  val isDev = exec("git", "tag", "-l", baseVersionName).isEmpty()
+  // val isDev = exec("git", "tag", "-l", baseVersionName).isEmpty()
+  val isDev = false
   val suffix = if (isDev) ".dev" else ""
   val commit = exec("git", "rev-parse", "--short=7", "HEAD")
   val code = exec("git", "rev-list", "--count", "HEAD").toInt()
