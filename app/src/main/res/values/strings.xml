@@ -98,12 +98,17 @@
   <string name="dark_mode">Dark mode</string>
   <string name="snapshot_keep">Snapshot keep rule</string>
   <string name="export_log">Export log</string>
+  <string name="export_apps">Export app info</string>
 
   <string name="apk_analytics_summary">Open the details page when clicking an APK file</string>
   <string name="colorful_icon_summary">Some marked libraries will have a colored logo</string>
   <string name="lib_ref_threshold_summary">Only libraries with the number of library references reaching the threshold are displayed in the list</string>
   <string name="reload_apps_summary">Recommended to use when the app list is shown abnormally</string>
   <string name="export_log_summary">Export the log file of the app</string>
+  <string name="export_apps_webui_tip">Exported apps can be viewed on the WebUI</string>
+  <string name="export_apps_start">Start</string>
+  <string name="export_apps_success">Exported %1$d apps</string>
+  <string name="export_apps_failed">Failed to export apps: %1$s</string>
   <string name="help_docs_summary">Learn how to use LibChecker</string>
   <string name="join_telegram_group_summary">Join our Telegram group</string>
   <string name="anonymous_statistics_summary">We use Google Firebase to anonymously send the most commonly used marked libraries and some usage habit data to make LibChecker better</string>
@@ -130,7 +135,7 @@
   <string name="further_operation">Further operation</string>
   <string name="app_info_launch">Launch</string>
   <string name="app_info_settings">Settings</string>
-  <string name="app_info_share">Settings</string>
+  <string name="app_info_share">Share</string>
   <string name="lib_detail_dialog_title">Library details</string>
   <string name="lib_permission_dialog_title">Permission details</string>
   <string name="lib_permission_provided_by_format">Provided by %s</string>
@@ -205,12 +210,18 @@
   <string name="lib_detail_app_install_source_shizuku_not_running_detail">Click here to jump to Shizuku to start it</string>
   <string name="lib_detail_app_install_source_shizuku_permission_not_granted">Shizuku not authorized</string>
   <string name="lib_detail_app_install_source_shizuku_permission_not_granted_detail">Click here for Shizuku authorization for installation requester</string>
+  <string name="lib_detail_app_dexopt_title">DEX optimization</string>
+  <string name="lib_detail_app_dexopt_status">Status</string>
+  <string name="lib_detail_app_dexopt_reason">Reason</string>
   <string name="lib_detail_elf_info">More details</string>
   <string name="lib_detail_elf_extract">Extract</string>
   <string name="lib_detail_elf_extract_success">ELF file saved to Downloads</string>
   <string name="lib_detail_elf_extract_failed">Failed to extract ELF file</string>
   <string name="lib_detail_dependency_tip">Dependencies</string>
   <string name="lib_detail_entry_points_tip">Entry points</string>
+  <string name="lib_detail_optimization_tip">Optimization</string>
+  <string name="lib_detail_optimization_on">Native symbols are stripped, resulting in app size savings.</string>
+  <string name="lib_detail_optimization_off">Native symbols are not stripped, preventing app size savings.</string>
   <string name="apk_preview">APK Preview</string>
   <string name="apk_preview_item_not_available">Cannot be displayed in preview mode</string>
   <string name="feature_live_update_notification">Live Update notification</string>
@@ -322,4 +333,8 @@
   <string name="snapshot_menu_hide_no_component_changes">Hide no component changes</string>
   <string name="snapshot_menu_diff_highlight">Differences highlight</string>
   <string name="snapshot_menu_use_iec_units">Use IEC units</string>
+
+  <!-- A11y -->
+  <string name="a11y_state_expanded">Expanded</string>
+  <string name="a11y_state_collapsed">Collapsed</string>
 </resources>

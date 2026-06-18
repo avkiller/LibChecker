@@ -1,5 +1,6 @@
 package com.absinthe.libchecker.features.home
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.ComponentInfo
@@ -37,6 +38,7 @@ import com.absinthe.libchecker.constant.options.LibReferenceOptions
 import com.absinthe.libchecker.data.app.LocalAppDataSource
 import com.absinthe.libchecker.data.app.PackageChangeState
 import com.absinthe.libchecker.database.Repositories
+import com.absinthe.libchecker.database.RulesRepository
 import com.absinthe.libchecker.database.entity.LCItem
 import com.absinthe.libchecker.features.statistics.bean.LibReference
 import com.absinthe.libchecker.services.IWorkerService
@@ -52,24 +54,27 @@ import com.absinthe.libchecker.utils.extensions.getColorByAttr
 import com.absinthe.libchecker.utils.extensions.getFeatures
 import com.absinthe.libchecker.utils.extensions.getVersionCode
 import com.absinthe.libchecker.utils.extensions.isArchivedPackage
+import com.absinthe.libchecker.utils.extensions.requireAvailableCacheDir
 import com.absinthe.libchecker.utils.harmony.ApplicationDelegate
 import com.absinthe.libchecker.utils.harmony.HarmonyOsUtil
 import com.absinthe.libraries.utils.manager.TimeRecorder
 import com.absinthe.rulesbundle.IconResMap
-import com.absinthe.rulesbundle.LCRules
 import java.io.File
 import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import ohos.bundle.IBundleManager
 import okio.buffer
 import okio.sink
@@ -84,6 +89,9 @@ class HomeViewModel : ViewModel() {
 
   private val _libReference: MutableSharedFlow<List<LibReference>?> = MutableSharedFlow()
   val libReference = _libReference.asSharedFlow()
+
+  private val _isRequestChangeRunning = MutableStateFlow(false)
+  val isRequestChangeRunning = _isRequestChangeRunning.asStateFlow()
 
   private var _savedRefList: List<LibReference>? = null
   val savedRefList: List<LibReference>?
@@ -102,6 +110,7 @@ class HomeViewModel : ViewModel() {
   var currentSearchQuery: String = ""
 
   private val pendingChangedPackages = ArrayDeque<PackageChangeState>()
+  private var pendingFeatureInitializationRequest = false
 
   fun reloadApps() {
     if (appListStatus != STATUS_NOT_START || (initJob?.isActive == false && requestChangeJob?.isActive == false)) {
@@ -122,6 +131,34 @@ class HomeViewModel : ViewModel() {
   fun packageChanged(packageChangeState: PackageChangeState) {
     setEffect {
       Effect.PackageChanged(packageChangeState)
+    }
+  }
+
+  fun connectWorkerBinder(binder: IWorkerService) {
+    workerBinder = binder
+    if (pendingFeatureInitializationRequest) {
+      requestFeatureInitialization()
+    }
+  }
+
+  fun disconnectWorkerBinder() {
+    workerBinder = null
+  }
+
+  fun requestFeatureInitialization() {
+    val binder = workerBinder ?: run {
+      pendingFeatureInitializationRequest = true
+      return
+    }
+    if (appListStatus == STATUS_START_INIT || appListStatus == STATUS_START_REQUEST_CHANGE) {
+      pendingFeatureInitializationRequest = true
+      return
+    }
+    pendingFeatureInitializationRequest = false
+    runCatching {
+      binder.initFeatures()
+    }.onFailure {
+      Timber.w(it, "requestFeatureInitialization failed")
     }
   }
 
@@ -163,14 +200,18 @@ class HomeViewModel : ViewModel() {
     if (initJob?.isActive == true) {
       return
     }
-    viewModelScope.launch {
-      initJob = initItemsImpl(context, LocalAppDataSource.getApplicationList(true))
+    initJob = viewModelScope.launch(Dispatchers.IO) {
+      try {
+        initItemsImpl(context, LocalAppDataSource.getApplicationList(true))
+      } finally {
+        initJob = null
+      }
     }
   }
 
   private val bundleManager by lazy { ApplicationDelegate(LibCheckerApp.app).iBundleManager }
 
-  private fun initItemsImpl(context: Context, appList: List<PackageInfo>) = viewModelScope.launch(Dispatchers.IO) {
+  private suspend fun initItemsImpl(context: Context, appList: List<PackageInfo>) {
     Timber.d("initItems: START")
 
     val packageManager = context.packageManager
@@ -199,6 +240,8 @@ class HomeViewModel : ViewModel() {
         insert(lcItems)
         lcItems.clear()
       }
+
+      if (!currentCoroutineContext().isActive) return
     }
 
     if (lcItems.isNotEmpty()) {
@@ -209,10 +252,11 @@ class HomeViewModel : ViewModel() {
     timeRecorder.end()
     Timber.d("initItems: END, $timeRecorder")
     updateAppListStatus(STATUS_NOT_START)
-    initJob = null
+    requestFeatureInitialization()
   }
 
   private var requestChangeJob: Job? = null
+  private val requestChangeGeneration = AtomicInteger()
 
   fun requestChange(context: Context, packageChangeState: PackageChangeState? = null) {
     viewModelScope.launch {
@@ -221,101 +265,137 @@ class HomeViewModel : ViewModel() {
         return@launch
       }
       packageChangeState?.let { pendingChangedPackages.add(it) }
+      val generation = requestChangeGeneration.incrementAndGet()
       requestChangeJob?.cancel()
-      requestChangeJob = requestChangeImpl(context, packageChangeState == null)
+      requestChangeJob = requestChangeImpl(context, packageChangeState == null, generation)
     }
   }
 
-  private fun requestChangeImpl(context: Context, forceUpdate: Boolean) = viewModelScope.launch(Dispatchers.IO) {
+  private fun requestChangeImpl(
+    context: Context,
+    forceUpdate: Boolean,
+    generation: Int
+  ) = viewModelScope.launch(Dispatchers.IO) {
     val dbItems = Repositories.lcRepository.getLCItems()
-    if (dbItems.isEmpty()) return@launch
+    if (dbItems.isEmpty()) {
+      if (requestChangeGeneration.get() == generation) {
+        _isRequestChangeRunning.value = false
+        updateAppListStatus(STATUS_NOT_START)
+        requestChangeJob = null
+      }
+      return@launch
+    }
 
     Timber.d("Request change: START")
     val timeRecorder = TimeRecorder()
     val packageManager = context.packageManager
 
     timeRecorder.start()
+    _isRequestChangeRunning.value = true
     updateAppListStatus(STATUS_START_REQUEST_CHANGE)
 
-    val isHarmony = HarmonyOsUtil.isHarmonyOs()
+    try {
+      val isHarmony = HarmonyOsUtil.isHarmonyOs()
 
-    if (!forceUpdate) {
-      while (pendingChangedPackages.isNotEmpty() && isActive) {
-        val currentState = pendingChangedPackages.removeFirst()
-        val currentPackageName = currentState.getActualPackageInfo().packageName
+      if (!forceUpdate) {
+        while (pendingChangedPackages.isNotEmpty() && isActive) {
+          val currentState = pendingChangedPackages.removeFirst()
+          val currentPackageName = currentState.packageName
 
-        if (pendingChangedPackages.none { it.getActualPackageInfo().packageName == currentPackageName }) {
-          when (currentState) {
-            is PackageChangeState.Added -> {
-              val item = generateLCItemFromPackageInfo(packageManager, currentState.getActualPackageInfo(), isHarmony)
-              insert(item)
-            }
+          if (pendingChangedPackages.none { it.packageName == currentPackageName }) {
+            when (currentState) {
+              is PackageChangeState.Added -> {
+                val packageInfo = getChangedPackageInfo(currentPackageName) ?: continue
+                val item = generateLCItemFromPackageInfo(packageManager, packageInfo, isHarmony, true)
+                insert(item)
+              }
 
-            is PackageChangeState.Removed -> {
-              Repositories.lcRepository.deleteLCItemByPackageName(currentState.getActualPackageInfo().packageName)
-            }
+              is PackageChangeState.Removed -> {
+                Repositories.lcRepository.deleteLCItemByPackageName(currentPackageName)
+              }
 
-            is PackageChangeState.Replaced -> {
-              val item = generateLCItemFromPackageInfo(packageManager, currentState.getActualPackageInfo(), isHarmony)
-              update(item)
+              is PackageChangeState.Replaced -> {
+                val packageInfo = getChangedPackageInfo(currentPackageName) ?: continue
+                val item = generateLCItemFromPackageInfo(packageManager, packageInfo, isHarmony, true)
+                update(item)
+              }
             }
           }
         }
-      }
-    } else {
-      val dbApps = dbItems.map { it.packageName }.toSet()
-      var applications = LocalAppDataSource.getApplicationMap(true)
-      var localApps = applications.map { it.key }.toSet()
-      var newApps = localApps - dbApps
-      var removedApps = dbApps - localApps
+      } else {
+        val dbItemMap = dbItems.associateBy { it.packageName }
+        var applications = LocalAppDataSource.getApplicationMap(true)
 
-      /*
-       * The application list returned with a probability only contains system applications.
-       * When the difference is greater than a certain threshold, we re-request the list.
-       */
-      if (newApps.size > 30 || removedApps.size > 30) {
-        Timber.w("Request change canceled because of large diff, re-request appMap")
-        applications = LocalAppDataSource.getApplicationMap(true)
-        localApps = applications.map { it.key }.toSet()
-        newApps = localApps - dbApps
-        removedApps = dbApps - localApps
-      }
-
-      newApps.forEach {
-        if (!isActive) return@launch
-        runCatching {
-          val info = applications[it] ?: return@runCatching
-          insert(generateLCItemFromPackageInfo(packageManager, info, isHarmony))
-        }.onFailure { e ->
-          Timber.e(e, "requestChange: $it")
+        /*
+         * The application list returned with a probability only contains system applications.
+         * When the difference is greater than a certain threshold, we re-request the list.
+         */
+        if (hasLargeApplicationDiff(applications, dbItemMap)) {
+          Timber.w("Request change canceled because of large diff, re-request appMap")
+          applications = LocalAppDataSource.getApplicationMap(true)
         }
+
+        applications.values.asSequence()
+          .filter { it.packageName !in dbItemMap }
+          .forEach {
+            if (!isActive) return@launch
+            runCatching {
+              insert(generateLCItemFromPackageInfo(packageManager, it, isHarmony, true))
+            }.onFailure { e ->
+              Timber.e(e, "requestChange: ${it.packageName}")
+            }
+          }
+
+        dbItemMap.keys.asSequence()
+          .filter { it !in applications }
+          .forEach {
+            if (!isActive) return@launch
+            Repositories.lcRepository.deleteLCItemByPackageName(it)
+          }
+
+        applications.values.asSequence()
+          .mapNotNull { packageInfo ->
+            dbItemMap[packageInfo.packageName]?.let { dbItem -> packageInfo to dbItem }
+          }
+          .filter { (packageInfo, dbItem) ->
+            dbItem.versionCode != packageInfo.getVersionCode() ||
+              packageInfo.lastUpdateTime != dbItem.lastUpdatedTime ||
+              dbItem.lastUpdatedTime == 0L
+          }.forEach { (packageInfo, _) ->
+            if (!isActive) return@launch
+            runCatching {
+              update(generateLCItemFromPackageInfo(packageManager, packageInfo, isHarmony, true))
+            }.onFailure { e ->
+              Timber.e(e, "requestChange: ${packageInfo.packageName}")
+            }
+          }
       }
 
-      removedApps.forEach {
-        if (!isActive) return@launch
-        Repositories.lcRepository.deleteLCItemByPackageName(it)
-      }
+      refreshList()
 
-      localApps.intersect(dbApps).asSequence()
-        .mapNotNull { applications[it] }
-        .filter { pi ->
-          dbItems.find { it.packageName == pi.packageName }?.let {
-            it.versionCode != pi.getVersionCode() ||
-              pi.lastUpdateTime != it.lastUpdatedTime ||
-              it.lastUpdatedTime == 0L
-          } == true
-        }.forEach {
-          if (!isActive) return@launch
-          update(generateLCItemFromPackageInfo(packageManager, it, isHarmony))
-        }
+      updateAppListStatus(STATUS_START_REQUEST_CHANGE_END)
+    } finally {
+      timeRecorder.end()
+      Timber.d("Request change: END, $timeRecorder")
+      if (requestChangeGeneration.get() == generation) {
+        updateAppListStatus(STATUS_NOT_START)
+        _isRequestChangeRunning.value = false
+        requestChangeJob = null
+        requestFeatureInitialization()
+      }
     }
+  }
 
-    refreshList()
+  private fun hasLargeApplicationDiff(
+    applications: Map<String, PackageInfo>,
+    dbItemMap: Map<String, LCItem>
+  ): Boolean {
+    return applications.keys.count { it !in dbItemMap } > 30 ||
+      dbItemMap.keys.count { it !in applications } > 30
+  }
 
-    updateAppListStatus(STATUS_START_REQUEST_CHANGE_END)
-    timeRecorder.end()
-    Timber.d("Request change: END, $timeRecorder")
-    updateAppListStatus(STATUS_NOT_START)
+  private fun getChangedPackageInfo(packageName: String): PackageInfo? {
+    return runCatching { PackageUtils.getPackageInfo(packageName) }.getOrNull()
   }
 
   private fun generateLCItemFromPackageInfo(
@@ -354,76 +434,74 @@ class HomeViewModel : ViewModel() {
   fun computeLibReference() {
     computeLibReferenceJob?.cancel()
     computeLibReferenceJob = viewModelScope.launch(Dispatchers.IO) {
-      computeLibReferenceImpl(LocalAppDataSource.getApplicationMap())
+      computeLibReferenceImpl(LocalAppDataSource.getApplicationList())
     }
   }
 
-  private suspend fun computeLibReferenceImpl(appMap: Map<String, PackageInfo>) {
+  private suspend fun computeLibReferenceImpl(targets: List<PackageInfo>) {
     referenceMap = null
     _libReference.emit(null)
     val map = HashMap<String, Pair<MutableSet<String>, Int>>()
     val showSystem = GlobalValues.isShowSystemApps
 
     var progressCount = 0
+    val types = getSelectedLibReferenceTypes()
+    val progressTotal = (targets.size * types.size).coerceAtLeast(1)
 
     fun updateLibRefProgressImpl() {
-      val size = appMap.size
-      if (size > 0) {
-        updateLibRefProgress(progressCount * 100 / size)
-      }
+      updateLibRefProgress(progressCount * 100 / progressTotal)
     }
 
-    fun computeInternal(@LibType type: Int) = runBlocking {
-      for (item in appMap.values) {
-        if (!isActive) return@runBlocking
-        if (!showSystem && ((item.applicationInfo!!.flags and ApplicationInfo.FLAG_SYSTEM) > 0)) {
+    suspend fun computeInternal(@LibType type: Int): Boolean {
+      for (target in targets) {
+        if (!currentCoroutineContext().isActive) {
+          return false
+        }
+        val applicationInfo = target.applicationInfo
+        if (applicationInfo == null) {
+          progressCount++
+          updateLibRefProgressImpl()
+          continue
+        }
+        if (!showSystem && (applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM) > 0) {
           progressCount++
           updateLibRefProgressImpl()
           continue
         }
 
-        computeComponentReference(map, item.packageName, type)
+        computeComponentReference(map, target.packageName, type)
         progressCount++
         updateLibRefProgressImpl()
       }
+      return true
     }
 
     updateLibRefProgress(0)
 
-    val options = GlobalValues.libReferenceOptions
-    if (options and LibReferenceOptions.NATIVE_LIBS > 0) {
-      computeInternal(NATIVE)
-    }
-    if (options and LibReferenceOptions.SERVICES > 0) {
-      computeInternal(SERVICE)
-    }
-    if (options and LibReferenceOptions.ACTIVITIES > 0) {
-      computeInternal(ACTIVITY)
-    }
-    if (options and LibReferenceOptions.RECEIVERS > 0) {
-      computeInternal(RECEIVER)
-    }
-    if (options and LibReferenceOptions.PROVIDERS > 0) {
-      computeInternal(PROVIDER)
-    }
-    if (options and LibReferenceOptions.PERMISSIONS > 0) {
-      computeInternal(PERMISSION)
-    }
-    if (options and LibReferenceOptions.METADATA > 0) {
-      computeInternal(METADATA)
-    }
-    if (options and LibReferenceOptions.PACKAGES > 0) {
-      computeInternal(PACKAGE)
-    }
-    if (options and LibReferenceOptions.SHARED_UID > 0) {
-      computeInternal(SHARED_UID)
-    }
-    if (options and LibReferenceOptions.ACTION > 0) {
-      computeInternal(ACTION)
+    for (type in types) {
+      if (!computeInternal(type)) {
+        return
+      }
     }
 
     referenceMap = map
-    matchingRules()
+    matchingRules(map)
+  }
+
+  private fun getSelectedLibReferenceTypes(): List<Int> {
+    val options = GlobalValues.libReferenceOptions
+    return mutableListOf<Int>().apply {
+      if (options and LibReferenceOptions.NATIVE_LIBS > 0) add(NATIVE)
+      if (options and LibReferenceOptions.SERVICES > 0) add(SERVICE)
+      if (options and LibReferenceOptions.ACTIVITIES > 0) add(ACTIVITY)
+      if (options and LibReferenceOptions.RECEIVERS > 0) add(RECEIVER)
+      if (options and LibReferenceOptions.PROVIDERS > 0) add(PROVIDER)
+      if (options and LibReferenceOptions.PERMISSIONS > 0) add(PERMISSION)
+      if (options and LibReferenceOptions.METADATA > 0) add(METADATA)
+      if (options and LibReferenceOptions.PACKAGES > 0) add(PACKAGE)
+      if (options and LibReferenceOptions.SHARED_UID > 0) add(SHARED_UID)
+      if (options and LibReferenceOptions.ACTION > 0) add(ACTION)
+    }
   }
 
   private fun computeComponentReference(
@@ -436,8 +514,10 @@ class HomeViewModel : ViewModel() {
         NATIVE -> {
           val packageInfo = PackageUtils.getPackageInfo(packageName)
           val list = PackageUtils.getNativeDirLibs(packageInfo)
+          val nativeLibNames = list.map { it.name }
           val mapped =
-            list.filter { LCAppUtils.checkNativeLibValidation(packageName, it.name, list) }
+            list.asSequence()
+              .filter { RulesRepository.checkNativeLibValidation(packageName, it.name, nativeLibNames) }
               .map { it.name }
           computeReferenceInternal(
             referenceMap,
@@ -482,6 +562,7 @@ class HomeViewModel : ViewModel() {
         DEX -> {
           val packageInfo = PackageUtils.getPackageInfo(packageName)
           val list = PackageUtils.getDexList(packageInfo)
+            .asSequence()
             .filter { it.name.startsWith(packageName).not() }
             .map { it.name }
           computeReferenceInternal(
@@ -501,7 +582,7 @@ class HomeViewModel : ViewModel() {
             referenceMap,
             packageName,
             PERMISSION,
-            packageInfo.requestedPermissions?.toList()
+            packageInfo.requestedPermissions?.asSequence()
           )
         }
 
@@ -514,7 +595,7 @@ class HomeViewModel : ViewModel() {
             referenceMap,
             packageName,
             METADATA,
-            packageInfo.applicationInfo?.metaData?.keySet()
+            packageInfo.applicationInfo?.metaData?.keySet()?.asSequence()
           )
         }
 
@@ -522,7 +603,7 @@ class HomeViewModel : ViewModel() {
           val split = packageName.split(".")
           val packagePrefix = split.subList(0, split.size.coerceAtMost(2)).joinToString(".")
           if (referenceMap[packagePrefix] == null) {
-            referenceMap[packagePrefix] = mutableSetOf<String>() to PACKAGE
+            referenceMap[packagePrefix] = HashSet<String>() to PACKAGE
           }
           referenceMap[packagePrefix]!!.first.add(packageName)
         }
@@ -531,7 +612,7 @@ class HomeViewModel : ViewModel() {
           val packageInfo = PackageUtils.getPackageInfo(packageName)
           if (packageInfo.sharedUserId?.isNotBlank() == true) {
             if (referenceMap[packageInfo.sharedUserId] == null) {
-              referenceMap[packageInfo.sharedUserId!!] = mutableSetOf<String>() to SHARED_UID
+              referenceMap[packageInfo.sharedUserId!!] = HashSet<String>() to SHARED_UID
             }
             referenceMap[packageInfo.sharedUserId]!!.first.add(packageName)
           }
@@ -546,7 +627,6 @@ class HomeViewModel : ViewModel() {
                 component.intentFilters.asSequence()
                   .flatMap { filter -> filter.actions }
               }
-              .toSet()
           // .filter { !it.startsWith("android.") }
           computeReferenceInternal(
             referenceMap,
@@ -573,7 +653,10 @@ class HomeViewModel : ViewModel() {
       referenceMap,
       packageName,
       type,
-      components.orEmpty().filter { it.name.startsWith(packageName).not() }.map { it.name }
+      components.orEmpty()
+        .asSequence()
+        .filter { it.name.startsWith(packageName).not() }
+        .map { it.name }
     )
   }
 
@@ -581,10 +664,10 @@ class HomeViewModel : ViewModel() {
     referenceMap: HashMap<String, Pair<MutableSet<String>, Int>>,
     packageName: String,
     @LibType type: Int,
-    list: Collection<String>?
+    list: Sequence<String>?
   ) {
     list?.forEach {
-      referenceMap.getOrPut(it) { mutableSetOf<String>() to type }.first.apply {
+      referenceMap.getOrPut(it) { HashSet<String>() to type }.first.apply {
         add(packageName)
       }
     }
@@ -593,8 +676,18 @@ class HomeViewModel : ViewModel() {
   private var matchingJob: Job? = null
 
   fun matchingRules() {
+    val map = referenceMap ?: run {
+      computeLibReference()
+      return
+    }
+    matchingRules(map)
+  }
+
+  @SuppressLint("WrongConstant")
+  private fun matchingRules(map: HashMap<String, Pair<MutableSet<String>, Int>>) {
+    matchingJob?.cancel()
     matchingJob = viewModelScope.launch(Dispatchers.IO) {
-      referenceMap?.let { map ->
+      try {
         var progressCount = 0
 
         fun updateLibRefProgressImpl() {
@@ -612,11 +705,11 @@ class HomeViewModel : ViewModel() {
           GlobalValues.libReferenceOptions and LibReferenceOptions.ONLY_NOT_MARKED > 0
 
         for (entry in map) {
-          if (!isActive) return@let
+          if (!isActive) return@launch
           if (entry.value.first.size >= threshold && entry.key.isNotBlank()) {
             val ruleType = if (entry.value.second == ACTION) ACTION_IN_RULES else entry.value.second
             val rule = if (entry.value.second != PERMISSION && entry.value.second != METADATA) {
-              LCRules.getRule(entry.key, ruleType, true)
+              RulesRepository.getRule(entry.key, ruleType, true)
             } else {
               null
             }
@@ -639,6 +732,11 @@ class HomeViewModel : ViewModel() {
         refList.sortByDescending { it.referredList.size }
         _libReference.emit(refList)
         _savedRefList = refList
+      } finally {
+        if (referenceMap === map) {
+          referenceMap = null
+        }
+        map.clear()
       }
     }
   }
@@ -655,8 +753,14 @@ class HomeViewModel : ViewModel() {
     }
   }
 
+  private var clearApkCacheJob: Job? = null
+
   fun clearApkCache() {
-    LibCheckerApp.app.externalCacheDir?.deleteRecursively()
+    clearApkCacheJob?.cancel()
+    clearApkCacheJob = viewModelScope.launch(Dispatchers.IO) {
+      LibCheckerApp.app.externalCacheDir?.listFiles()?.forEach { it.deleteRecursively() }
+      LibCheckerApp.app.requireAvailableCacheDir()
+    }
   }
 
   private suspend fun insert(item: LCItem) = Repositories.lcRepository.insert(item)

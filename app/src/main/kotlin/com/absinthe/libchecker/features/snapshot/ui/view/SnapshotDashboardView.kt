@@ -37,7 +37,7 @@ class SnapshotDashboardView(context: Context) : MaterialCardView(context, null, 
       LayoutParams.WRAP_CONTENT
     )
     setSmoothRoundCorner(12.dp)
-    setCardBackgroundColor(context.getColorStateListByAttr(com.google.android.material.R.attr.colorSecondaryContainer))
+    setCardBackgroundColor(context.getColorStateListByAttr(com.google.android.material.R.attr.colorSurfaceContainerHigh))
     addView(container)
   }
 
@@ -68,6 +68,7 @@ class SnapshotDashboardView(context: Context) : MaterialCardView(context, null, 
         ViewGroup.LayoutParams.WRAP_CONTENT
       )
       setImageResource(R.drawable.ic_arrow_drop_down)
+      contentDescription = context.getString(R.string.snapshot_current_timestamp)
       setBackgroundResource(context.getResourceIdByAttr(android.R.attr.selectableItemBackgroundBorderless))
     }
 

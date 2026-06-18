@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.ApplicationInfoHidden
 import android.content.pm.ComponentInfo
-import android.content.pm.IPackageManager
 import android.content.pm.InstallSourceInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
@@ -82,7 +81,6 @@ import com.absinthe.libchecker.utils.extensions.toClassDefType
 import com.absinthe.libchecker.utils.extensions.toHexString
 import com.absinthe.libchecker.utils.manifest.StaticLibraryReader
 import com.absinthe.libraries.utils.manager.TimeRecorder
-import com.android.apksig.ApkVerifier
 import com.android.tools.smali.dexlib2.Opcodes
 import dev.rikka.tools.refine.Refine
 import java.io.File
@@ -93,9 +91,6 @@ import java.util.zip.ZipEntry
 import javax.security.cert.X509Certificate
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipFile
-import rikka.shizuku.Shizuku
-import rikka.shizuku.ShizukuBinderWrapper
-import rikka.shizuku.SystemServiceHelper
 import timber.log.Timber
 
 object PackageUtils {
@@ -138,7 +133,7 @@ object PackageUtils {
               appInfo.enabled = false
               appInfo.sourceDir = ai.sourceDir
               appInfo.nativeLibraryDir = ai.nativeLibraryDir
-              appInfo.splitSourceDirs = rootDir.listFiles()!!
+              appInfo.splitSourceDirs = rootDir.listFiles().orEmpty()
                 .filter { file -> file.name.startsWith("split_") && file.extension == "apk" }
                 .map { file -> file.path }
                 .toTypedArray()
@@ -306,7 +301,7 @@ object PackageUtils {
   private const val ENABLE_GET_APK_FILE_LIBS_LOG = true
 
   private fun getApkFileLibs(file: File, specifiedAbi: Int? = null, parseElf: Boolean): Map<String, MutableList<LibStringItem>> {
-    if (file.exists().not()) {
+    if (file.exists().not() || file.canRead().not()) {
       return emptyMap()
     }
     if (!parseElf) {
@@ -320,46 +315,65 @@ object PackageUtils {
     val timeRecorder = TimeRecorder()
 
     if (ENABLE_GET_APK_FILE_LIBS_LOG) timeRecorder.start()
-    val getDataOffsetMethod = ZipFile::class.java.getDeclaredMethod("getDataOffset", ZipArchiveEntry::class.java).apply {
-      isAccessible = true
-    }
-    ZipFile.Builder().setFile(file).get().use { zipFile ->
-      zipFile.entries
-        .asSequence()
-        .filter { !it.isDirectory && it.name.endsWith(".so") && (sourceDir == null || it.name.startsWith(sourceDir)) }
-        .forEach { entry ->
-          val pathFirst = entry.name.split(File.separator).first()
-          val dir = STRING_ABI_MAP.keys.find { entry.name.startsWith(libDir + File.separator + it) }
-            ?: if (pathFirst == assetsDir) assetsDir else return@forEach
-          val offset = getDataOffsetMethod.invoke(zipFile, entry) as Long
+    try {
+      val getDataOffsetMethod = ZipFile::class.java.getDeclaredMethod("getDataOffset", ZipArchiveEntry::class.java).apply {
+        isAccessible = true
+      }
+      ZipFile.Builder().setFile(file).get().use { zipFile ->
+        zipFile.entries
+          .asSequence()
+          .filter { !it.isDirectory && it.name.endsWith(".so") && (sourceDir == null || it.name.startsWith(sourceDir)) }
+          .forEach { entry ->
+            val pathFirst = entry.name.split(File.separator).first()
+            val dir = STRING_ABI_MAP.keys.find { entry.name.startsWith(libDir + File.separator + it) }
+              ?: if (pathFirst == assetsDir) assetsDir else return@forEach
+            val offset = getDataOffsetMethod.invoke(zipFile, entry) as Long
 
-          val currentEntryUncompressedAndNot16KB = entry.method == ZipEntry.STORED && (offset % PAGE_SIZE_16_KB) != 0L
-          val elfParser = runCatching {
-            ElfParser(zipFile.getInputStream(entry)).use { parser ->
-              parser.parseHeader()
-              parser
+            val currentEntryZipAlignment = if (entry.method == ZipEntry.STORED) {
+              getZipAlignment(offset)
+            } else {
+              -1
             }
-          }.getOrNull()
+            val elfParser = runCatching {
+              ElfParser(zipFile.getInputStream(entry)).use { parser ->
+                parser.parseHeader()
+                parser
+              }
+            }.getOrNull()
 
-          val item = LibStringItem(
-            name = entry.name.split(File.separator).last(),
-            size = entry.size,
-            elfInfo = ElfInfo(
-              elfParser?.getEType() ?: ET_NOT_ELF,
-              elfParser?.getMinPageSize() ?: -1,
-              currentEntryUncompressedAndNot16KB
-            ),
-            source = entry.name,
-            process = file.name
-          )
-          map.getOrPut(dir) { mutableListOf() }.add(item)
-        }
+            val item = LibStringItem(
+              name = entry.name.split(File.separator).last(),
+              size = entry.size,
+              elfInfo = ElfInfo(
+                elfParser?.getEType() ?: ET_NOT_ELF,
+                elfParser?.getMinPageSize() ?: -1,
+                zipAlignment = currentEntryZipAlignment
+              ),
+              source = entry.name,
+              process = file.name
+            )
+            map.getOrPut(dir) { mutableListOf() }.add(item)
+          }
+      }
+    } catch (e: OutOfMemoryError) {
+      logApkFileLibsFailure(file, parseElf = true, e)
+      return emptyMap()
+    } catch (e: Exception) {
+      logApkFileLibsFailure(file, parseElf = true, e)
+      return getApkFileLibsWithoutParsingElf(file, specifiedAbi)
     }
     if (ENABLE_GET_APK_FILE_LIBS_LOG) {
       timeRecorder.end()
       Timber.d("${file.absolutePath} Check zipFile cost: $timeRecorder")
     }
     return map
+  }
+
+  private fun getZipAlignment(offset: Long): Long {
+    if (offset <= 0L) {
+      return -1
+    }
+    return java.lang.Long.lowestOneBit(offset)
   }
 
   private fun getApkFileLibsWithoutParsingElf(file: File, specifiedAbi: Int? = null): Map<String, MutableList<LibStringItem>> {
@@ -371,26 +385,38 @@ object PackageUtils {
     val sourceDir = specifiedAbi?.let { libDir + File.separator + ABI_STRING_MAP[it % MULTI_ARCH] }
     val map = mutableMapOf<String, MutableList<LibStringItem>>()
 
-    ZipFileCompat(file).use { zipFile ->
-      zipFile.getZipEntries()
-        .asSequence()
-        .filter {
-          it.isDirectory.not() && it.name.endsWith(".so") && (sourceDir == null || it.name.startsWith(sourceDir))
-        }
-        .forEach { entry ->
-          val pathFirst = entry.name.split(File.separator).first()
-          val dir = STRING_ABI_MAP.keys.find { entry.name.startsWith(libDir + File.separator + it) }
-            ?: if (pathFirst == assetsDir) assetsDir else return@forEach
-          val item = LibStringItem(
-            name = entry.name.split(File.separator).last(),
-            size = entry.size,
-            elfInfo = ElfInfo()
-          )
-          map.getOrPut(dir) { mutableListOf() }.add(item)
-        }
+    try {
+      ZipFileCompat(file).use { zipFile ->
+        zipFile.getZipEntries()
+          .asSequence()
+          .filter {
+            it.isDirectory.not() && it.name.endsWith(".so") && (sourceDir == null || it.name.startsWith(sourceDir))
+          }
+          .forEach { entry ->
+            val pathFirst = entry.name.split(File.separator).first()
+            val dir = STRING_ABI_MAP.keys.find { entry.name.startsWith(libDir + File.separator + it) }
+              ?: if (pathFirst == assetsDir) assetsDir else return@forEach
+            val item = LibStringItem(
+              name = entry.name.split(File.separator).last(),
+              size = entry.size,
+              elfInfo = ElfInfo()
+            )
+            map.getOrPut(dir) { mutableListOf() }.add(item)
+          }
+      }
+    } catch (e: OutOfMemoryError) {
+      logApkFileLibsFailure(file, parseElf = false, e)
+      return emptyMap()
+    } catch (e: Exception) {
+      logApkFileLibsFailure(file, parseElf = false, e)
+      return emptyMap()
     }
 
     return map
+  }
+
+  private fun logApkFileLibsFailure(file: File, parseElf: Boolean, throwable: Throwable) {
+    Timber.w(throwable, "Failed to parse native libs from ${file.absolutePath}, parseElf=$parseElf")
   }
 
   /**
@@ -857,6 +883,23 @@ object PackageUtils {
     }
   }
 
+  @DrawableRes
+  fun getLargeAbiBadgeResource(type: Int): Int {
+    return when (type % MULTI_ARCH) {
+      ARMV8 -> R.drawable.ic_abi_label_arm64_v8a
+      ARMV7 -> R.drawable.ic_abi_label_armeabi_v7a
+      ARMV5 -> R.drawable.ic_abi_label_armeabi
+      X86_64 -> R.drawable.ic_abi_label_x86_64
+      X86 -> R.drawable.ic_abi_label_x86
+      MIPS64 -> R.drawable.ic_abi_label_mips64
+      MIPS -> R.drawable.ic_abi_label_mips
+      RISCV64 -> R.drawable.ic_abi_label_riscv64
+      RISCV32 -> R.drawable.ic_abi_label_riscv32
+      ERROR -> 0
+      else -> 0
+    }
+  }
+
   fun isAbi64Bit(abi: Int): Boolean {
     if (abi == NO_LIBS) {
       return Process.is64Bit()
@@ -972,22 +1015,12 @@ object PackageUtils {
       Timber.e(e)
       return null
     }
-    if (!Shizuku.pingBinder()) {
-      Timber.e("Shizuku not running")
+    if (!ShizukuManager.requireAvailable()) {
       return origInstallSourceInfo
     }
-    if (Shizuku.getVersion() < 10) {
-      Timber.e("Requires Shizuku API 10")
-      return origInstallSourceInfo
-    } else if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-      Timber.i("Shizuku not authorized")
-      return origInstallSourceInfo
-    }
-    return IPackageManager.Stub.asInterface(
-      ShizukuBinderWrapper(SystemServiceHelper.getSystemService("package"))
-    ).let {
+    return ShizukuManager.getPackageManager().let {
       if (OsUtils.atLeastU()) {
-        it.getInstallSourceInfo(packageName, Shizuku.getUid())
+        it.getInstallSourceInfo(packageName, ShizukuManager.getUid())
       } else {
         it.getInstallSourceInfo(packageName)
       }
@@ -1008,34 +1041,16 @@ object PackageUtils {
     context: Context,
     dateFormat: DateFormat,
     signature: Signature,
-    sigResult: ApkVerifier.Result?
+    signatureSchemes: List<String>
   ): LibStringItem {
     val bytes = signature.toByteArray()
     val certificate = X509Certificate.getInstance(bytes)
     val serialNumber = "0x${certificate.serialNumber.toString(16)}"
-    val schemes = mutableListOf<String>()
-    sigResult?.let {
-      if (it.isVerifiedUsingV1Scheme) {
-        schemes.add("V1")
-      }
-      if (it.isVerifiedUsingV2Scheme) {
-        schemes.add("V2")
-      }
-      if (it.isVerifiedUsingV3Scheme) {
-        schemes.add("V3")
-      }
-      if (it.isVerifiedUsingV31Scheme) {
-        schemes.add("V3.1")
-      }
-      if (it.isVerifiedUsingV4Scheme) {
-        schemes.add("V4")
-      }
-    }
     val source = buildString {
       // Signature Scheme Version
       append(context.getString(R.string.signature_scheme_version))
       append(":")
-      appendLine(schemes.joinToString(", "))
+      appendLine(signatureSchemes.joinToString(", "))
       // Signature Version
       append(context.getString(R.string.signature_version))
       append(":")

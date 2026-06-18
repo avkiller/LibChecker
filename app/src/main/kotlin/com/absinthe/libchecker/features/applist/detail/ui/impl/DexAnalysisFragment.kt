@@ -32,7 +32,7 @@ class DexAnalysisFragment : BaseDetailFragment<FragmentLibComponentBinding>() {
       emptyView.text.text = getString(R.string.uncharted_territory)
     } else {
       lifecycleScope.launch(Dispatchers.IO) {
-        setItemsWithFilter(viewModel.queriedText, null)
+        setItemsWithFilter(items, viewModel.queriedText, null)
       }
     }
 
@@ -50,14 +50,15 @@ class DexAnalysisFragment : BaseDetailFragment<FragmentLibComponentBinding>() {
     }
 
     adapter.apply {
-      animationEnable = true
+      animationEnable = false
       setOnItemLongClickListener { _, _, position ->
         ClipboardUtils.put(requireContext(), getItem(position).item.name)
         VersionCompat.showCopiedOnClipboardToast(context)
         true
       }
       setDiffCallback(LibStringDiffUtil())
-      setEmptyView(emptyView)
+      stateView = this@DexAnalysisFragment.emptyView
+      isStateViewEnable = true
     }
 
     viewModel.apply {

@@ -4,7 +4,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.absinthe.libchecker.LibCheckerApp
-import com.absinthe.libchecker.database.Repositories
+import com.absinthe.libchecker.database.RulesRepository
 import com.absinthe.libchecker.utils.showToast
 import com.google.android.gms.common.internal.BaseGmsClient
 import timber.log.Timber
@@ -37,7 +37,11 @@ object MainLooperFilter {
     "tryGetViewHolderForPositionByDeadline",
     "trying to unhide a view that was not hidden",
     "updateForceDarkMode",
+    "Called attach on a child which is not detached",
     "Expected the adapter to be 'fresh' while restoring state",
+    "Fragment no longer exists for key",
+    "The specified child already has a parent",
+    "Tmp detached view should be removed from RecyclerView",
     BaseGmsClient::class.java.name
   )
 
@@ -53,9 +57,10 @@ object MainLooperFilter {
     } else if (stack.contains("de.robv.android.xposed")) {
       Timber.w(e)
       LibCheckerApp.app.showToast("Encounter Xposed module crash")
-    } else if (stack.contains("no such table: rules_table")) {
-      Repositories.deleteRulesDatabase()
-      throw e
+    } else if (RulesRepository.isMissingRulesTableStack(stack)) {
+      Timber.w(e)
+      RulesRepository.deleteDatabase()
+      RulesRepository.reinitialize()
     } else {
       throw e
     }

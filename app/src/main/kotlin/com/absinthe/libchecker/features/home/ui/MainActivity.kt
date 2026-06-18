@@ -6,10 +6,13 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.IBinder
+import android.view.Gravity
 import android.view.Menu
 import android.view.View
+import android.view.ViewGroup
 import androidx.activity.viewModels
 import androidx.appcompat.widget.SearchView
+import androidx.appcompat.widget.Toolbar
 import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.content.ContextCompat
 import androidx.core.view.MenuProvider
@@ -23,17 +26,18 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import androidx.viewpager2.widget.ViewPager2
-import com.absinthe.libchecker.LibCheckerApp
 import com.absinthe.libchecker.R
 import com.absinthe.libchecker.annotation.STATUS_INIT_END
 import com.absinthe.libchecker.annotation.STATUS_START_INIT
 import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.constant.OnceTag
 import com.absinthe.libchecker.data.app.LocalAppDataSource
+import com.absinthe.libchecker.database.RulesRepository
 import com.absinthe.libchecker.databinding.ActivityMainBinding
 import com.absinthe.libchecker.features.applist.ui.AppListFragment
 import com.absinthe.libchecker.features.home.HomeViewModel
 import com.absinthe.libchecker.features.home.INavViewContainer
+import com.absinthe.libchecker.features.home.ui.view.HomeToolbarTitleView
 import com.absinthe.libchecker.features.settings.ui.SettingsFragment
 import com.absinthe.libchecker.features.snapshot.ui.SnapshotFragment
 import com.absinthe.libchecker.features.statistics.ui.LibReferenceFragment
@@ -44,23 +48,23 @@ import com.absinthe.libchecker.ui.base.IAppBarContainer
 import com.absinthe.libchecker.utils.LCAppUtils
 import com.absinthe.libchecker.utils.Telemetry
 import com.absinthe.libchecker.utils.extensions.addBackStateHandler
+import com.absinthe.libchecker.utils.extensions.applySystemBarsPadding
 import com.absinthe.libchecker.utils.extensions.doOnMainThreadIdle
 import com.absinthe.libchecker.utils.extensions.isKeyboardShowing
 import com.absinthe.libchecker.utils.extensions.setCurrentItem
-import com.absinthe.rulesbundle.LCRules
 import com.google.android.material.behavior.HideBottomViewOnScrollBehavior
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.navigation.NavigationBarView
 import jonathanfinerty.once.Once
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import timber.log.Timber
 
 const val PAGE_TRANSFORM_DURATION = 300L
+private const val FEATURES_NOT_INITIALIZED = -1
 
 class MainActivity :
   BaseActivity<ActivityMainBinding>(),
@@ -69,15 +73,16 @@ class MainActivity :
 
   private val appViewModel: HomeViewModel by viewModels()
   private val navViewBehavior by lazy { HideBottomViewOnScrollBehavior<BottomNavigationView>() }
+  private val toolbarTitleView by lazy { HomeToolbarTitleView(this) }
   private val workerServiceConnection = object : ServiceConnection {
     override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
       if (service?.pingBinder() == true) {
-        appViewModel.workerBinder = IWorkerService.Stub.asInterface(service)
+        appViewModel.connectWorkerBinder(IWorkerService.Stub.asInterface(service))
       }
     }
 
     override fun onServiceDisconnected(name: ComponentName?) {
-      appViewModel.workerBinder = null
+      appViewModel.disconnectWorkerBinder()
     }
   }
   private val _menuProviders = hashSetOf<MenuProvider>()
@@ -87,7 +92,7 @@ class MainActivity :
 
     if (intent.getBooleanExtra(Constants.PP_FROM_CLOUD_RULES_UPDATE, false)) {
       Timber.w("Reinitializing updated rule database")
-      LCRules.init(LibCheckerApp.app)
+      RulesRepository.reinitialize()
     }
 
     initView()
@@ -205,7 +210,7 @@ class MainActivity :
     val navView = binding.navView as NavigationBarView
     setSupportActionBar(binding.toolbar)
     binding.toolbar.isBackInvokedCallbackEnabled = false
-    supportActionBar?.title = LCAppUtils.setTitle(this)
+    setupToolbarTitle()
 
     binding.apply {
       container.bringChildToFront(binding.appbar)
@@ -278,9 +283,11 @@ class MainActivity :
           }
           true
         }
-        setOnClickListener { /*Do nothing*/ }
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         if (this is BottomNavigationView) {
           fixBottomNavigationViewInsets(this)
+        } else {
+          applySystemBarsPadding(top = true, bottom = true)
         }
       }
     }
@@ -290,6 +297,23 @@ class MainActivity :
       enabledState = { !isKeyboardShowing() && binding.toolbar.hasExpandedActionView() },
       handler = { binding.toolbar.collapseActionView() }
     )
+  }
+
+  private fun setupToolbarTitle() {
+    supportActionBar?.title = null
+    binding.toolbar.title = null
+    toolbarTitleView.setTitle(LCAppUtils.setTitle(this))
+    if (toolbarTitleView.parent == null) {
+      binding.toolbar.addView(
+        toolbarTitleView,
+        Toolbar.LayoutParams(
+          ViewGroup.LayoutParams.WRAP_CONTENT,
+          ViewGroup.LayoutParams.MATCH_PARENT
+        ).apply {
+          gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        }
+      )
+    }
   }
 
   override fun onResume() {
@@ -347,8 +371,6 @@ class MainActivity :
     appViewModel.apply {
       if (!Once.beenDone(Once.THIS_APP_INSTALL, OnceTag.FIRST_LAUNCH)) {
         initItems(this@MainActivity)
-      } else {
-        initFeatures()
       }
 
       effect.onEach {
@@ -366,31 +388,29 @@ class MainActivity :
               doOnMainThreadIdle {
                 showNavigationView()
               }
-              initFeatures()
             }
           }
 
           else -> {}
         }
       }.launchIn(lifecycleScope)
+
+      combine(
+        isRequestChangeRunning,
+        WorkerService.featureInitializationState,
+        dbItemsFlow
+      ) { requestChangeRunning, featureInitializationState, dbItems ->
+        requestChangeRunning ||
+          featureInitializationState.running ||
+          dbItems.any { item -> item.features == FEATURES_NOT_INITIALIZED }
+      }.onEach {
+        toolbarTitleView.setLoading(it)
+      }.launchIn(lifecycleScope)
     }
     LocalAppDataSource.packageChangeFlow.onEach {
       Timber.d("MainActivity received package change: $it")
       appViewModel.packageChanged(it)
     }.launchIn(lifecycleScope)
-  }
-
-  private fun initFeatures() {
-    lifecycleScope.launch {
-      while (appViewModel.workerBinder == null) {
-        delay(300)
-      }
-
-      withContext(Dispatchers.Main) {
-        Timber.d("initFeatures")
-        appViewModel.workerBinder?.initFeatures()
-      }
-    }
   }
 
   override fun onPrepareOptionsMenu(menu: Menu?): Boolean {

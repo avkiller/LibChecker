@@ -29,6 +29,7 @@ class NativeAnalysisFragment :
 
   override fun getRecyclerView() = binding.list
   override val needShowLibDetailDialog = true
+  override val autoLoadItems = false
 
   override suspend fun getItems(): List<LibStringItemChip> {
     val flow = viewModel.nativeLibItems
@@ -55,9 +56,10 @@ class NativeAnalysisFragment :
     }
 
     adapter.apply {
-      animationEnable = true
+      animationEnable = false
       setDiffCallback(LibStringDiffUtil())
-      setEmptyView(emptyView)
+      stateView = this@NativeAnalysisFragment.emptyView
+      isStateViewEnable = true
     }
 
     viewModel.apply {
@@ -103,7 +105,7 @@ class NativeAnalysisFragment :
     } else {
       adapter.processMap = viewModel.nativeSourceMap
       lifecycleScope.launch(Dispatchers.IO) {
-        setItemsWithFilter(viewModel.queriedText, viewModel.queriedProcess)
+        setItemsWithFilter(list, viewModel.queriedText, viewModel.queriedProcess)
       }
     }
 

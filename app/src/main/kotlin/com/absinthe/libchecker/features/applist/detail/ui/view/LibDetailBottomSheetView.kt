@@ -28,18 +28,15 @@ import com.absinthe.libchecker.features.applist.detail.ui.adapter.node.LibDetail
 import com.absinthe.libchecker.ui.adapter.VerticalSpacesItemDecoration
 import com.absinthe.libchecker.ui.app.BottomSheetRecyclerView
 import com.absinthe.libchecker.utils.extensions.dp
-import com.absinthe.libchecker.utils.extensions.getColor
 import com.absinthe.libchecker.utils.extensions.getColorByAttr
 import com.absinthe.libchecker.utils.extensions.getResourceIdByAttr
 import com.absinthe.libchecker.view.AViewGroup
 import com.absinthe.libchecker.view.app.IHeaderView
+import com.absinthe.libchecker.view.app.RuleLoadingView
 import com.absinthe.libraries.utils.manager.SystemBarManager
 import com.absinthe.libraries.utils.view.BottomSheetHeaderView
 import com.absinthe.libraries.utils.view.HeightAnimatableViewFlipper
-import com.airbnb.lottie.LottieAnimationView
-import com.airbnb.lottie.LottieDrawable
 import com.google.android.material.tabs.TabLayout
-import java.io.File
 import java.util.Locale
 import timber.log.Timber
 
@@ -59,6 +56,7 @@ class LibDetailBottomSheetView(context: Context) :
       it.topMargin = 4.dp
     }
     setBackgroundResource(R.drawable.bg_circle_outline)
+    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
   }
 
   val title = AppCompatTextView(
@@ -84,13 +82,8 @@ class LibDetailBottomSheetView(context: Context) :
     setOutAnimation(context, R.anim.anim_fade_out)
   }
 
-  private val loading = LottieAnimationView(context).apply {
-    layoutParams = FrameLayout.LayoutParams(200.dp, 200.dp).also {
-      it.gravity = Gravity.CENTER
-    }
-    imageAssetsFolder = File.separator
-    repeatCount = LottieDrawable.INFINITE
-    setAnimation("anim/lib_detail_rocket.json.zip")
+  private val loading = RuleLoadingView(context).apply {
+    layoutParams = createLoadingLayoutParams()
   }
 
   private val notFoundView = NotFoundView(context).apply {
@@ -167,17 +160,33 @@ class LibDetailBottomSheetView(context: Context) :
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
-    loading.playAnimation()
+    if (viewFlipper.displayedChildView == loading) {
+      loading.start()
+    }
   }
 
   override fun getHeaderView(): BottomSheetHeaderView {
     return header
   }
 
+  fun setLoadingIcon(iconRes: Int, isSingleColorIcon: Boolean = false) {
+    loading.setInitialIcon(iconRes, isSingleColorIcon)
+  }
+
+  private fun createLoadingLayoutParams(): FrameLayout.LayoutParams {
+    return FrameLayout.LayoutParams(
+      FrameLayout.LayoutParams.MATCH_PARENT,
+      160.dp
+    ).also {
+      it.gravity = Gravity.CENTER
+    }
+  }
+
   class LibDetailItemView(context: Context) : AViewGroup(context) {
 
     val icon = AppCompatImageView(context).apply {
       layoutParams = LayoutParams(24.dp, 24.dp)
+      importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
     val tip = AppCompatTextView(context).apply {
@@ -207,6 +216,13 @@ class LibDetailBottomSheetView(context: Context) :
       addView(icon)
       addView(tip)
       addView(text)
+    }
+
+    fun updateContentDescription() {
+      contentDescription = listOf(tip.text, text.text)
+        .map { it.toString().trim() }
+        .filter(String::isNotEmpty)
+        .joinToString()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -240,6 +256,7 @@ class LibDetailBottomSheetView(context: Context) :
     private val icon = AppCompatImageView(context).apply {
       layoutParams = LayoutParams(64.dp, 64.dp)
       setImageResource(R.drawable.ic_failed)
+      importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
     private val notFoundText = AppCompatTextView(context).apply {
@@ -248,7 +265,7 @@ class LibDetailBottomSheetView(context: Context) :
         ViewGroup.LayoutParams.WRAP_CONTENT
       )
       text = context.getString(R.string.not_found)
-      setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBody2))
+      setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBodyMedium))
     }
 
     private val createNewIssueText = AppCompatTextView(context).apply {
@@ -257,7 +274,7 @@ class LibDetailBottomSheetView(context: Context) :
         ViewGroup.LayoutParams.WRAP_CONTENT
       )
       text = context.getString(R.string.create_an_issue)
-      setLinkTextColor(R.color.colorPrimary.getColor(context))
+      setLinkTextColor(context.getColorByAttr(androidx.appcompat.R.attr.colorPrimary))
       gravity = Gravity.CENTER_VERTICAL
       setCompoundDrawablesWithIntrinsicBounds(R.drawable.ic_github, 0, 0, 0)
       compoundDrawablePadding = 4.dp
@@ -329,31 +346,31 @@ class LibDetailBottomSheetView(context: Context) :
       LibDetailItem(
         iconRes = R.drawable.ic_label,
         tipRes = R.string.lib_detail_label_tip,
-        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceSubtitle2),
+        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceTitleSmall),
         text = ruleBean.data.label
       ),
       LibDetailItem(
         iconRes = R.drawable.ic_team,
         tipRes = R.string.lib_detail_develop_team_tip,
-        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceSubtitle2),
+        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceTitleSmall),
         text = ruleBean.data.dev_team
       ),
       LibDetailItem(
         iconRes = R.drawable.ic_github,
         tipRes = R.string.lib_detail_rule_contributors_tip,
-        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceSubtitle2),
+        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceTitleSmall),
         text = ruleBean.data.rule_contributors.joinToString(separator = ", ")
       ),
       LibDetailItem(
         iconRes = R.drawable.ic_content,
         tipRes = R.string.lib_detail_description_tip,
-        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBody2),
+        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBodyMedium),
         text = ruleBean.data.description
       ),
       LibDetailItem(
         iconRes = R.drawable.ic_url,
         tipRes = R.string.lib_detail_relative_link_tip,
-        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBody2),
+        textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBodyMedium),
         text = "<a href='${ruleBean.data.source_link}'> ${ruleBean.data.source_link} </a>"
       )
     )
@@ -362,7 +379,7 @@ class LibDetailBottomSheetView(context: Context) :
         LibDetailItem(
           iconRes = R.drawable.ic_time,
           tipRes = R.string.lib_detail_last_update_tip,
-          textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBody2),
+          textStyleRes = context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBodyMedium),
           text = it
         )
       )
@@ -379,12 +396,14 @@ class LibDetailBottomSheetView(context: Context) :
 
   fun showContent() {
     Timber.d("showContent")
+    loading.stop()
     if (viewFlipper.displayedChildView != libDetailContentView) {
       viewFlipper.show(libDetailContentView)
     }
   }
 
   fun showNotFound() {
+    loading.stop()
     if (viewFlipper.displayedChildView != notFoundView) {
       viewFlipper.show(notFoundView)
     }

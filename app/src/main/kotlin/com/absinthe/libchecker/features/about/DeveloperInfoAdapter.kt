@@ -27,11 +27,12 @@ class DeveloperInfoAdapter : BaseQuickAdapter<DeveloperInfo, BaseViewHolder>(0) 
 
   override fun convert(holder: BaseViewHolder, item: DeveloperInfo) {
     (holder.itemView as DeveloperItemView).apply {
-      container.icon.load(item.avatarRes) {
+      container.icon.load(item.avatarUrl) {
         transformations(CircleCropTransformation())
       }
       container.name.text = item.name
       container.desc.text = item.desc
+      contentDescription = listOf(item.name, item.desc).joinToString()
       setOnClickListener {
         val context = it.context
         runCatching {

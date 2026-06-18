@@ -14,6 +14,7 @@ class AndroidVersionLabelView(context: Context) : AViewGroup(context) {
 
   private val icon = AppCompatImageView(context).apply {
     layoutParams = LayoutParams(24.dp, 24.dp)
+    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     addView(this)
   }
 
@@ -24,7 +25,7 @@ class AndroidVersionLabelView(context: Context) : AViewGroup(context) {
     ).also {
       it.marginStart = 8.dp
     }
-    setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceSubtitle2))
+    setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceTitleSmall))
     addView(this)
   }
 

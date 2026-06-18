@@ -25,21 +25,24 @@ class MultipleAppsIconView(context: Context) : AViewGroup(context) {
     }
     clipToOutline = true
     setOutlineProvider(outlineProvider)
-    setBackgroundColor(context.getColorByAttr(com.google.android.material.R.attr.colorSecondaryContainer))
+    setBackgroundColor(context.getColorByAttr(com.google.android.material.R.attr.colorSurfaceContainerHigh))
+    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
   }
 
-  fun setIcons(packages: List<String>) {
+  fun setIcons(packages: Iterable<String>) {
     if (icons.isNotEmpty()) {
       removeAllViews()
       icons.clear()
     }
-    while (icons.size < 4 && icons.size < packages.size) {
+    val iterator = packages.iterator()
+    while (icons.size < 4 && iterator.hasNext()) {
       val icon = AppCompatImageView(context).also {
-        val packageName = packages[icons.size]
+        val packageName = iterator.next()
         val packageInfo = runCatching {
           PackageUtils.getPackageInfo(packageName)
         }.getOrNull() ?: return
 
+        it.importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         it.load(packageInfo)
       }
       icons.add(icon)

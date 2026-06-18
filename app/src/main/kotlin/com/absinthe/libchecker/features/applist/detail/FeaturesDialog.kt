@@ -24,6 +24,7 @@ import androidx.fragment.app.FragmentActivity
 import com.absinthe.libchecker.R
 import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.constant.URLManager.ANDROID_DEV_HOST
+import com.absinthe.libchecker.features.applist.detail.FeaturesDialog.commonShowDialogImpl
 import com.absinthe.libchecker.features.applist.detail.ui.AppBundleBottomSheetDialogFragment
 import com.absinthe.libchecker.features.applist.detail.ui.AppInstallSourceBSDFragment
 import com.absinthe.libchecker.features.applist.detail.ui.AppPropBottomSheetDialogFragment
@@ -161,7 +162,7 @@ object FeaturesDialog {
   fun showKMPDialog(context: Context, version: String?) {
     commonShowDialogImpl(
       context,
-      R.drawable.ic_jetbrain_kmp,
+      com.absinthe.lc.rulesbundle.R.drawable.ic_lib_jetbrain_kmp,
       R.string.jetbrain_kmp,
       R.string.jetbrain_compose_multiplatform_details,
       version = version,
@@ -265,6 +266,7 @@ object FeaturesDialog {
       BadgeUtils.attachBadgeDrawable(badge, anchor)
     }
 
+    val titleRes = R.string.dialog_themed_and_alternative_app_icons
     drawables.forEach { drawable ->
       flexLayout.addView(
         AppCompatImageView(context).apply {
@@ -273,6 +275,7 @@ object FeaturesDialog {
           }
           scaleType = ImageView.ScaleType.CENTER_CROP
           setImageDrawable(drawable)
+          contentDescription = context.getString(titleRes)
           setOnLongClickListener {
             copyToClipboard()
             true
@@ -293,7 +296,6 @@ object FeaturesDialog {
       addView(flexLayout)
     }
 
-    val titleRes = R.string.dialog_themed_and_alternative_app_icons
     val dialog = BaseAlertDialogBuilder(context)
       .setIcon(drawables[0])
       .setTitle(titleRes)

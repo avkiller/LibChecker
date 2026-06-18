@@ -8,8 +8,6 @@ import android.view.MenuItem
 import android.view.View
 import android.widget.FrameLayout
 import androidx.appcompat.widget.SearchView
-import androidx.core.content.ContextCompat
-import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -32,14 +30,11 @@ import com.absinthe.libchecker.ui.base.BaseActivity
 import com.absinthe.libchecker.ui.base.BaseListControllerFragment
 import com.absinthe.libchecker.ui.base.IAppBarContainer
 import com.absinthe.libchecker.utils.Telemetry
-import com.absinthe.libchecker.utils.UiUtils
 import com.absinthe.libchecker.utils.extensions.doOnMainThreadIdle
 import com.absinthe.libchecker.utils.extensions.launchLibReferencePage
 import com.absinthe.libchecker.utils.extensions.setSpaceFooterView
 import com.absinthe.libchecker.utils.showToast
-import com.absinthe.libchecker.view.app.RingDotsView
 import com.absinthe.libraries.utils.utils.AntiShakeUtils
-import com.absinthe.rulesbundle.IconResMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -53,6 +48,7 @@ import rikka.widget.borderview.BorderView
 
 const val VF_LOADING = 0
 const val VF_LIST = 1
+private const val SEARCH_UPDATE_DELAY_MILLIS = 160L
 
 class LibReferenceFragment :
   BaseListControllerFragment<FragmentLibReferenceBinding>(),
@@ -64,6 +60,14 @@ class LibReferenceFragment :
   private var advancedMenuBSDFragment: LibReferenceMenuBSDFragment? = null
   private var firstScrollFlag = false
   private var isSearchTextClearOnce = false
+  private var hasRequestedInitialCompute = false
+  private var deferredReferenceWork: DeferredReferenceWork? = null
+  private var deferredReferenceWorkNeedsLoading = false
+
+  private enum class DeferredReferenceWork {
+    COMPUTE,
+    MATCH
+  }
 
   override fun init() {
     val context = (context as? BaseActivity<*>) ?: return
@@ -131,25 +135,7 @@ class LibReferenceFragment :
           refAdapter.setSpaceFooterView()
         }
       }
-      loadingView.loadingView.setHighlightIconProvider(object : RingDotsView.HighlightIconProvider {
-        override suspend fun produce(emitter: RingDotsView.HighlightIconEmitter) {
-          while (true) {
-            if (!binding.loadingView.loadingView.isHighlightAnimationAvailable()) {
-              break
-            }
-            val index = (0 until 100).random()
-            if (IconResMap.isSingleColorIcon(index)) {
-              continue
-            }
-            val iconRes = IconResMap.getIconRes(index)
-            val drawable = ContextCompat.getDrawable(context, iconRes) ?: continue
-            val circleBackgroundDrawable =
-              UiUtils.addCircleBackground(context, drawable, R.color.feature_background)
-
-            emitter.emit(circleBackgroundDrawable.toBitmap())
-          }
-        }
-      })
+      loadingView.loadingView.setRuleIconHighlightProvider(withCircleBackground = true)
     }
 
     refAdapter.apply {
@@ -169,21 +155,21 @@ class LibReferenceFragment :
           item.referredList.toTypedArray()
         )
       }
-      setEmptyView(
+      stateView =
         EmptyListView(context).apply {
           layoutParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
           )
         }
-      )
+      isStateViewEnable = true
     }
 
     homeViewModel.apply {
       effect.onEach {
         when (it) {
           is HomeViewModel.Effect.PackageChanged -> {
-            computeRef(false)
+            requestComputeRef(false)
           }
 
           is HomeViewModel.Effect.UpdateLibRefProgress -> {
@@ -212,7 +198,7 @@ class LibReferenceFragment :
         Constants.PREF_ADVANCED_OPTIONS -> {
           val options = it.second as Int
           if (options and AdvancedOptions.SHOW_SYSTEM_APPS > 0) {
-            computeRef(true)
+            requestComputeRef(true)
           }
         }
 
@@ -224,7 +210,7 @@ class LibReferenceFragment :
         Constants.PREF_LIB_REF_THRESHOLD -> {
           val threshold = it.second as Int
           if (threshold < homeViewModel.savedThreshold) {
-            matchRules(true)
+            requestMatchRules(true)
             homeViewModel.savedThreshold = threshold
           } else {
             homeViewModel.refreshRef()
@@ -232,12 +218,6 @@ class LibReferenceFragment :
         }
       }
     }.launchIn(lifecycleScope)
-
-    lifecycleScope.launch {
-      if (refAdapter.data.isEmpty()) {
-        computeRef(true)
-      }
-    }
   }
 
   override fun onResume() {
@@ -302,7 +282,7 @@ class LibReferenceFragment :
   }
 
   private fun refreshList() {
-    computeRef(true)
+    requestComputeRef(true)
     Telemetry.recordEvent(
       Constants.Event.LIB_REFERENCE_FILTER_TYPE,
       mapOf(
@@ -310,6 +290,46 @@ class LibReferenceFragment :
           LibReferenceOptions.getOptionsString(GlobalValues.libReferenceOptions)
       )
     )
+  }
+
+  private fun requestComputeRef(needShowLoading: Boolean) {
+    if (!isFragmentVisible()) {
+      deferReferenceWork(DeferredReferenceWork.COMPUTE, needShowLoading)
+      return
+    }
+    hasRequestedInitialCompute = true
+    computeRef(needShowLoading)
+  }
+
+  private fun requestMatchRules(needShowLoading: Boolean) {
+    if (!isFragmentVisible()) {
+      deferReferenceWork(DeferredReferenceWork.MATCH, needShowLoading)
+      return
+    }
+    hasRequestedInitialCompute = true
+    matchRules(needShowLoading)
+  }
+
+  private fun deferReferenceWork(work: DeferredReferenceWork, needShowLoading: Boolean) {
+    deferredReferenceWork = when {
+      work == DeferredReferenceWork.COMPUTE -> DeferredReferenceWork.COMPUTE
+      deferredReferenceWork == DeferredReferenceWork.COMPUTE -> DeferredReferenceWork.COMPUTE
+      else -> work
+    }
+    deferredReferenceWorkNeedsLoading = deferredReferenceWorkNeedsLoading || needShowLoading
+  }
+
+  private fun runDeferredReferenceWork() {
+    val work = deferredReferenceWork ?: return
+    val needShowLoading = deferredReferenceWorkNeedsLoading || refAdapter.data.isEmpty()
+    deferredReferenceWork = null
+    deferredReferenceWorkNeedsLoading = false
+    hasRequestedInitialCompute = true
+
+    when (work) {
+      DeferredReferenceWork.COMPUTE -> computeRef(needShowLoading)
+      DeferredReferenceWork.MATCH -> matchRules(needShowLoading)
+    }
   }
 
   private fun computeRef(needShowLoading: Boolean) {
@@ -339,42 +359,51 @@ class LibReferenceFragment :
       LibReferenceAdapter.highlightText = newText
 
       searchUpdateJob?.cancel()
-      searchUpdateJob = lifecycleScope.launch(Dispatchers.IO) {
-        val savedRefList = homeViewModel.savedRefList ?: return@launch
-        val filter = savedRefList.filter {
-          it.libName.contains(newText, ignoreCase = true) ||
-            it.rule?.label?.contains(
-              newText,
-              ignoreCase = true
-            ) == true
-        }
-        LibReferenceAdapter.highlightText = newText
-
-        if (!isActive) {
-          return@launch
-        }
-        withContext(Dispatchers.Main) {
+      searchUpdateJob = lifecycleScope.launch {
+        var progressBarShown = false
+        try {
+          if (newText.isNotEmpty()) {
+            delay(SEARCH_UPDATE_DELAY_MILLIS)
+          }
           if (isFragmentVisible()) {
             (activity as? INavViewContainer)?.showProgressBar()
+            progressBarShown = true
           }
-          refAdapter.setDiffNewData(filter.toMutableList()) {
-            doOnMainThreadIdle {
-              //noinspection NotifyDataSetChanged
-              refAdapter.notifyDataSetChanged()
+          val savedRefList = homeViewModel.savedRefList ?: return@launch
+          val filter = withContext(Dispatchers.Default) {
+            if (newText.isEmpty()) {
+              savedRefList
+            } else {
+              savedRefList.filter {
+                it.libName.contains(newText, ignoreCase = true) ||
+                  it.rule?.label?.contains(
+                    newText,
+                    ignoreCase = true
+                  ) == true
+              }
             }
+          }
+          LibReferenceAdapter.highlightText = newText
+
+          if (!isActive) {
+            return@launch
+          }
+          refAdapter.setList(filter)
+          doOnMainThreadIdle {
             refAdapter.setSpaceFooterView()
           }
-          binding.list.post {
+
+          if (newText.equals("Easter Egg", true)) {
+            context?.showToast("🥚")
+            Telemetry.recordEvent(
+              Constants.Event.EASTER_EGG,
+              mapOf("EASTER_EGG" to "Lib Reference Search")
+            )
+          }
+        } finally {
+          if (progressBarShown) {
             (activity as? INavViewContainer)?.hideProgressBar()
           }
-        }
-
-        if (newText.equals("Easter Egg", true)) {
-          context?.showToast("🥚")
-          Telemetry.recordEvent(
-            Constants.Event.EASTER_EGG,
-            mapOf("EASTER_EGG" to "Lib Reference Search")
-          )
         }
       }
     }
@@ -385,6 +414,12 @@ class LibReferenceFragment :
     super.onVisibilityChanged(visible)
     if (visible) {
       refAdapter.setSpaceFooterView()
+      if (!hasRequestedInitialCompute && refAdapter.data.isEmpty()) {
+        hasRequestedInitialCompute = true
+        computeRef(true)
+      } else {
+        runDeferredReferenceWork()
+      }
     }
   }
 

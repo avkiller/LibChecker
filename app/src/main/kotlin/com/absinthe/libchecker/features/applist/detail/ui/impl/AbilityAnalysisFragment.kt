@@ -31,7 +31,7 @@ class AbilityAnalysisFragment : BaseDetailFragment<FragmentLibComponentBinding>(
       emptyView.text.text = getString(R.string.empty_list)
     } else {
       lifecycleScope.launch(Dispatchers.IO) {
-        setItemsWithFilter(viewModel.queriedText, viewModel.queriedProcess)
+        setItemsWithFilter(items, viewModel.queriedText, viewModel.queriedProcess)
       }
     }
     if (!isListReady) {
@@ -54,7 +54,8 @@ class AbilityAnalysisFragment : BaseDetailFragment<FragmentLibComponentBinding>(
         true
       }
       setDiffCallback(LibStringDiffUtil())
-      setEmptyView(emptyView)
+      stateView = this@AbilityAnalysisFragment.emptyView
+      isStateViewEnable = true
     }
 
     if (flow?.value?.isNotEmpty() == true) {

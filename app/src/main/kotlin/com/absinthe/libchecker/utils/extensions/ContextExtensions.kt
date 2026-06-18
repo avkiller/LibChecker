@@ -28,6 +28,7 @@ import androidx.annotation.StyleableRes
 import androidx.appcompat.view.ContextThemeWrapper
 import androidx.appcompat.widget.TintTypedArray
 import androidx.core.content.res.ResourcesCompat
+import java.io.File
 
 val Context.activity: Activity?
   get() {
@@ -40,6 +41,13 @@ val Context.activity: Activity?
       }
     }
   }
+
+fun Context.requireAvailableCacheDir(): File {
+  externalCacheDir?.takeIf { it.isDirectory || it.mkdirs() }?.let { return it }
+
+  check(cacheDir.isDirectory || cacheDir.mkdirs()) { "Failed to create cache directory: ${cacheDir.path}" }
+  return cacheDir
+}
 
 fun Context.getAnimation(@AnimRes id: Int): Animation = AnimationUtils.loadAnimation(this, id)
 

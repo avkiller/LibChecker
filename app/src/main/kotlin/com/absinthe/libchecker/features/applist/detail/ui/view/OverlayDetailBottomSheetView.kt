@@ -35,7 +35,7 @@ class OverlayDetailBottomSheetView(context: Context) :
     }
   }
 
-  private val targetTitleView = AppCompatTextView(
+  val targetTitleView = AppCompatTextView(
     ContextThemeWrapper(context, R.style.TextView_SansSerifMedium)
   ).apply {
     layoutParams = LayoutParams(
@@ -57,8 +57,8 @@ class OverlayDetailBottomSheetView(context: Context) :
       it.topMargin = 8.dp
     }
     strokeWidth = 1.dp
-    strokeColor = context.getColorByAttr(com.google.android.material.R.attr.colorOutline)
-    setCardBackgroundColor(context.getColorStateListByAttr(com.google.android.material.R.attr.colorSecondaryContainer))
+    strokeColor = context.getColorByAttr(com.google.android.material.R.attr.colorOutlineVariant)
+    setCardBackgroundColor(context.getColorStateListByAttr(com.google.android.material.R.attr.colorSurfaceContainerHigh))
   }
 
   val moreDetailButton = MaterialButton(context).apply {

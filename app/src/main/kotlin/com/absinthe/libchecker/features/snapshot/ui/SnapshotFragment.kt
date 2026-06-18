@@ -38,7 +38,6 @@ import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.constant.GlobalValues
 import com.absinthe.libchecker.constant.LCUris
 import com.absinthe.libchecker.constant.options.SnapshotOptions
-import com.absinthe.libchecker.data.app.LocalAppDataSource
 import com.absinthe.libchecker.data.app.PackageChangeState
 import com.absinthe.libchecker.databinding.FragmentSnapshotBinding
 import com.absinthe.libchecker.features.album.ui.AlbumActivity
@@ -57,6 +56,7 @@ import com.absinthe.libchecker.services.IShootService
 import com.absinthe.libchecker.services.OnShootListener
 import com.absinthe.libchecker.services.ShootService
 import com.absinthe.libchecker.ui.adapter.VerticalSpacesItemDecoration
+import com.absinthe.libchecker.ui.animator.ParticleRemoveItemAnimator
 import com.absinthe.libchecker.ui.base.BaseActivity
 import com.absinthe.libchecker.ui.base.BaseAlertDialogBuilder
 import com.absinthe.libchecker.ui.base.BaseListControllerFragment
@@ -64,15 +64,12 @@ import com.absinthe.libchecker.ui.base.IAppBarContainer
 import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.Telemetry
 import com.absinthe.libchecker.utils.Toasty
-import com.absinthe.libchecker.utils.UiUtils
-import com.absinthe.libchecker.utils.UiUtils.toCircularBitmap
 import com.absinthe.libchecker.utils.extensions.addPaddingTop
 import com.absinthe.libchecker.utils.extensions.doOnMainThreadIdle
 import com.absinthe.libchecker.utils.extensions.dp
 import com.absinthe.libchecker.utils.extensions.setLongClickCopiedToClipboard
 import com.absinthe.libchecker.utils.extensions.setSpaceFooterView
 import com.absinthe.libchecker.utils.fromJson
-import com.absinthe.libchecker.view.app.RingDotsView
 import com.absinthe.libraries.utils.utils.AntiShakeUtils
 import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
@@ -95,6 +92,8 @@ class SnapshotFragment :
 
   private val viewModel: SnapshotViewModel by activityViewModels()
   private val adapter = SnapshotAdapter()
+  private val particleItemAnimator = ParticleRemoveItemAnimator()
+  private val pendingParticleRemovePackageNames = linkedSetOf<String>()
   private var isSnapshotDatabaseItemsReady = false
   private var dropPrevious = false
   private var shouldCompare = true and ShootService.isComputing.not()
@@ -161,6 +160,7 @@ class SnapshotFragment :
     }
 
     dashboard.container.apply {
+      updateDashboardContentDescription(dashboard)
       fun changeTimeNode() {
         lifecycleScope.launch(Dispatchers.IO) {
           val timeStampList = viewModel.repository.getTimeStamps()
@@ -209,6 +209,7 @@ class SnapshotFragment :
       if (GlobalValues.snapshotTimestamp == 0L) {
         text.text = getString(R.string.snapshot_no_snapshot)
       }
+      updateContentDescription()
     }
 
     adapter.apply {
@@ -216,7 +217,8 @@ class SnapshotFragment :
       dashboard.also {
         setHeaderView(it)
       }
-      setEmptyView(emptyView)
+      stateView = emptyView
+      isStateViewEnable = true
       setDiffCallback(SnapshotDiffUtil())
       setOnItemClickListener { _, view, position ->
         if (AntiShakeUtils.isInvalidClick(view)) {
@@ -239,6 +241,7 @@ class SnapshotFragment :
     binding.apply {
       list.apply {
         adapter = this@SnapshotFragment.adapter
+        itemAnimator = particleItemAnimator
         borderDelegate = borderViewDelegate
         layoutManager = getSuitableLayoutManagerImpl(resources.configuration)
         borderVisibilityChangedListener =
@@ -260,23 +263,7 @@ class SnapshotFragment :
           adapter.setSpaceFooterView()
         }
       }
-      loading.setHighlightIconProvider(object : RingDotsView.HighlightIconProvider {
-        override suspend fun produce(emitter: RingDotsView.HighlightIconEmitter) {
-          val applications = LocalAppDataSource.getApplicationList()
-          val defaultIcon = context.packageManager.defaultActivityIcon
-          while (true) {
-            if (!loading.isHighlightAnimationAvailable()) {
-              break
-            }
-            val ai = applications.random().applicationInfo ?: continue
-            val drawable = ai.loadIcon(context.packageManager)
-              ?.takeIf { icon -> !UiUtils.drawablesAreEqual(icon, defaultIcon) }
-              ?: continue
-
-            emitter.emit(drawable.toCircularBitmap())
-          }
-        }
-      })
+      loading.setAppIconHighlightProvider()
     }
 
     viewModel.apply {
@@ -306,7 +293,11 @@ class SnapshotFragment :
       when (it) {
         is HomeViewModel.Effect.PackageChanged -> {
           if (allowRefreshing) {
-            packageQueue.offer(it.packageChangeState)
+            val packageChangeState = it.packageChangeState
+            if (packageChangeState is PackageChangeState.Removed) {
+              pendingParticleRemovePackageNames += packageChangeState.packageName
+            }
+            packageQueue.offer(packageChangeState)
             dequeuePackages()
             viewModel.getDashboardCount(GlobalValues.snapshotTimestamp, true)
           }
@@ -320,14 +311,17 @@ class SnapshotFragment :
         is SnapshotViewModel.Effect.DashboardCountChange -> {
           dashboard.container.tvSnapshotAppsCountText.text =
             String.format(Locale.getDefault(), "%d / %d", it.snapshotCount, it.appCount)
+          updateDashboardContentDescription(dashboard)
         }
 
         is SnapshotViewModel.Effect.TimeStampChange -> {
           if (it.timestamp != 0L) {
             dashboard.container.tvSnapshotTimestampText.text = viewModel.getFormatDateString(it.timestamp)
+            updateDashboardContentDescription(dashboard)
             updateSystemProps(dashboard, it.timestamp)
           } else {
             dashboard.container.tvSnapshotTimestampText.text = getString(R.string.snapshot_none)
+            updateDashboardContentDescription(dashboard)
             dashboard.container.setSystemProps(emptyList())
             viewModel.snapshotDiffItemsFlow.emit(emptyList())
             flip(VF_LIST)
@@ -335,6 +329,9 @@ class SnapshotFragment :
         }
 
         is SnapshotViewModel.Effect.DiffItemChange -> {
+          if (it.item.deleted) {
+            pendingParticleRemovePackageNames += it.item.packageName
+          }
           val newItems = adapter.data.toMutableList()
           newItems.removeIf { item -> item.packageName == it.item.packageName }
           newItems.add(it.item)
@@ -343,6 +340,7 @@ class SnapshotFragment :
         }
 
         is SnapshotViewModel.Effect.DiffItemRemove -> {
+          pendingParticleRemovePackageNames += it.packageName
           val newItems = adapter.data.toMutableList()
           newItems.removeIf { item -> item.packageName == it.packageName }
           items = newItems
@@ -496,10 +494,11 @@ class SnapshotFragment :
         flip(VF_LOADING)
         (context as INavViewContainer).showNavigationView()
         this@SnapshotFragment.dropPrevious = dropPrevious
-        ContextCompat.startForegroundService(
-          context,
-          Intent(context, ShootService::class.java)
-        )
+        runCatching {
+          context.startService(Intent(context, ShootService::class.java))
+        }.onFailure {
+          Timber.w(it, "Failed to start snapshot service")
+        }
         shootBinder?.computeSnapshot(dropPrevious) ?: run {
           Timber.w("shoot binder is null")
           Toasty.showShort(context, "Snapshot service error")
@@ -638,7 +637,7 @@ class SnapshotFragment :
       while (isActive) {
         packageQueue.take()?.let {
           Timber.d("Dequeue package: $it")
-          val packageName = it.getActualPackageInfo().packageName
+          val packageName = it.packageName
           val packageManager = context?.packageManager ?: return@let
           viewModel.compareItemDiff(packageManager, GlobalValues.snapshotTimestamp, packageName)
         }
@@ -695,12 +694,34 @@ class SnapshotFragment :
 
   private fun updateItems(list: List<SnapshotDiffItem>, highlightRefresh: Boolean = false) = lifecycleScope.launch(Dispatchers.Main) {
     val filterList = list.toMutableList()
-    if (GlobalValues.snapshotOptions.and(SnapshotOptions.HIDE_NO_COMPONENT_CHANGES) != 0) {
-      filterList.removeAll { it.isNothingChanged() }
+    filterList.removeAll(::shouldHideSnapshotItem)
+    val sortedList = filterList.sortedByDescending { it.updateTime }.toMutableList()
+    if (highlightRefresh) {
+      particleItemAnimator.prepareParticleRemovals(emptyList())
+    } else {
+      val newPackageNames = sortedList.mapTo(mutableSetOf()) { it.packageName }
+      val pendingRemovePackageNames = pendingParticleRemovePackageNames.toSet()
+      val deletedReplacementPackageNames = sortedList.asSequence()
+        .filter { it.deleted && it.packageName in pendingRemovePackageNames }
+        .mapTo(mutableSetOf()) { it.packageName }
+      val consumedRemovePackageNames = mutableSetOf<String>()
+      particleItemAnimator.prepareParticleRemovals(
+        adapter.data.asSequence()
+          .filter {
+            val shouldAnimate = it.packageName !in newPackageNames ||
+              it.packageName in deletedReplacementPackageNames
+            if (shouldAnimate) {
+              consumedRemovePackageNames += it.packageName
+            }
+            shouldAnimate
+          }
+          .map { SnapshotAdapter.stableItemIdFor(it) }
+          .toList()
+      )
+      pendingParticleRemovePackageNames.removeAll(consumedRemovePackageNames)
     }
     adapter.setDiffNewData(
-      filterList.sortedByDescending { it.updateTime }
-        .toMutableList()
+      sortedList
     ) {
       if (isDetached) {
         return@setDiffNewData
@@ -714,6 +735,11 @@ class SnapshotFragment :
         adapter.notifyDataSetChanged()
       }
     }
+  }
+
+  private fun shouldHideSnapshotItem(item: SnapshotDiffItem): Boolean {
+    return GlobalValues.snapshotOptions.and(SnapshotOptions.HIDE_NO_COMPONENT_CHANGES) != 0 &&
+      item.isNothingChanged()
   }
 
   private fun updateSystemProps(dashboard: SnapshotDashboardView, timestamp: Long) {
@@ -749,5 +775,24 @@ class SnapshotFragment :
         }
       }
     }
+  }
+
+  private fun updateDashboardContentDescription(dashboard: SnapshotDashboardView) {
+    dashboard.contentDescription = listOf(
+      getString(R.string.snapshot_current_timestamp),
+      dashboard.container.tvSnapshotTimestampText.text,
+      getString(R.string.snapshot_apps_count),
+      dashboard.container.tvSnapshotAppsCountText.text
+    )
+      .mapNotNull { it.toString().trim().takeIf(String::isNotEmpty) }
+      .joinToString()
+    dashboard.container.tvSnapshotTimestampText.contentDescription = listOf(
+      getString(R.string.dialog_title_change_timestamp),
+      dashboard.container.tvSnapshotTimestampText.text
+    )
+      .mapNotNull { it.toString().trim().takeIf(String::isNotEmpty) }
+      .joinToString()
+    dashboard.container.arrow.contentDescription =
+      dashboard.container.tvSnapshotTimestampText.contentDescription
   }
 }

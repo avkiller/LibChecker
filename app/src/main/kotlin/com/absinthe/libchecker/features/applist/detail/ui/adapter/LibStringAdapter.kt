@@ -45,6 +45,7 @@ import com.absinthe.libchecker.features.applist.detail.ui.view.NativeLibItemView
 import com.absinthe.libchecker.features.applist.detail.ui.view.StaticLibItemView
 import com.absinthe.libchecker.features.statistics.bean.DISABLED
 import com.absinthe.libchecker.features.statistics.bean.EXPORTED
+import com.absinthe.libchecker.features.statistics.bean.LibStringItem
 import com.absinthe.libchecker.features.statistics.bean.LibStringItemChip
 import com.absinthe.libchecker.ui.adapter.HighlightAdapter
 import com.absinthe.libchecker.utils.OsUtils
@@ -82,6 +83,7 @@ class LibStringAdapter(
 
   private var processMode: Boolean = false
   private var is64Bit: Boolean = false
+  private val nativeSizeTextCache = mutableMapOf<Pair<LibStringItem, List<String>>, CharSequence>()
 
   fun switchProcessMode() {
     setProcessMode(!processMode)
@@ -100,12 +102,14 @@ class LibStringAdapter(
   }
 
   override fun onCreateDefViewHolder(parent: ViewGroup, viewType: Int): BaseViewHolder {
-    return when (type) {
-      NATIVE -> createBaseViewHolder(NativeLibItemView(context))
-      METADATA -> createBaseViewHolder(MetadataLibItemView(context))
-      STATIC -> createBaseViewHolder(StaticLibItemView(context))
-      else -> createBaseViewHolder(ComponentLibItemView(context))
+    val itemView = when (type) {
+      NATIVE -> NativeLibItemView(context)
+      METADATA -> MetadataLibItemView(context)
+      STATIC -> StaticLibItemView(context)
+      else -> ComponentLibItemView(context)
     }
+    itemView.setBackgroundResource(context.getResourceIdByAttr(android.R.attr.selectableItemBackground))
+    return createBaseViewHolder(itemView)
   }
 
   override fun convert(holder: BaseViewHolder, item: LibStringItemChip) {
@@ -166,6 +170,11 @@ class LibStringAdapter(
           } else {
             setChip(null)
           }
+          contentDescription = buildItemDescription(
+            itemName,
+            item.rule?.label.takeIf { (GlobalValues.itemAdvancedOptions and AdvancedOptions.SHOW_MARKED_LIB) > 0 },
+            item.item.process.takeIf { !it.isNullOrEmpty() && processMode }
+          )
         }
       }
     }
@@ -175,13 +184,14 @@ class LibStringAdapter(
         (holder.itemView.background as TransitionDrawable).reverseTransition(
           HIGHLIGHT_TRANSITION_DURATION
         )
+        holder.itemView.setBackgroundResource(context.getResourceIdByAttr(android.R.attr.selectableItemBackground))
       }
-      holder.itemView.setBackgroundResource(context.getResourceIdByAttr(android.R.attr.selectableItemBackground))
     } else {
       val drawable = TransitionDrawable(
         listOf(
           Color.TRANSPARENT.toDrawable(),
-          R.color.highlight_component.getColor(context).toDrawable()
+          context.getColorByAttr(com.google.android.material.R.attr.colorSecondaryContainer)
+            .toDrawable()
         ).toTypedArray()
       )
       holder.itemView.background = drawable
@@ -212,27 +222,51 @@ class LibStringAdapter(
     // }
     itemView.processLabelColor = -1
     setOrHighlightText(itemView.libName, itemName)
-    itemView.libSize.text = PackageUtils.sizeToString(context, item.item)
+    itemView.libSize.text = getNativeSizeText(item)
     if ((GlobalValues.itemAdvancedOptions and AdvancedOptions.SHOW_MARKED_LIB) > 0) {
       itemView.setChip(item.rule)
     } else {
       itemView.setChip(null)
     }
+    itemView.contentDescription = buildItemDescription(
+      itemName,
+      itemView.libSize.text,
+      item.rule?.label.takeIf { (GlobalValues.itemAdvancedOptions and AdvancedOptions.SHOW_MARKED_LIB) > 0 }
+    )
+  }
 
-    val elfInfo = item.item.elfInfo
-    if (elfInfo.elfType != ET_NOT_SET && elfInfo.elfType != ET_DYN) {
-      val text = PackageUtils.elfTypeToString(elfInfo.elfType)
-      itemView.libSize.append(createNativeLabelSpan(text))
+  private fun getNativeSizeText(item: LibStringItemChip): CharSequence = nativeSizeTextCache.getOrPut(item.item to item.labels) {
+    buildSpannedString {
+      append(PackageUtils.sizeToString(context, item.item))
+      val elfInfo = item.item.elfInfo
+      if (elfInfo.elfType != ET_NOT_SET && elfInfo.elfType != ET_DYN) {
+        val text = PackageUtils.elfTypeToString(elfInfo.elfType)
+        append(createNativeLabelSpan(text))
+      }
+      if (elfInfo.elfType != ET_NOT_ELF) {
+        if (elfInfo.pageSize > 0 && elfInfo.pageSize % PAGE_SIZE_16_KB == 0) {
+          val text = "16 KB"
+          append(createNativeLabelSpan(text))
+        }
+        getZipAlignmentText(elfInfo.zipAlignment)?.let { zipAlignmentText ->
+          val text = zipAlignmentText
+          append(createNativeLabelSpan(text))
+        }
+      }
+      item.labels.forEach { label ->
+        append(createNativeLabelSpan(label))
+      }
     }
-    if (elfInfo.elfType != ET_NOT_ELF) {
-      if (elfInfo.pageSize > 0 && elfInfo.pageSize % PAGE_SIZE_16_KB == 0) {
-        val text = "16 KB"
-        itemView.libSize.append(createNativeLabelSpan(text))
-      }
-      if (elfInfo.uncompressedAndNot16KB) {
-        val text = "NON 16 KB STORED"
-        itemView.libSize.append(createNativeLabelSpan(text))
-      }
+  }
+
+  private fun getZipAlignmentText(zipAlignment: Long): String? {
+    if (zipAlignment <= 0L || zipAlignment >= PAGE_SIZE_16_KB) {
+      return null
+    }
+    return if (zipAlignment >= 1024L && zipAlignment % 1024L == 0L) {
+      "${zipAlignment / 1024}KB ZIPALIGN"
+    } else {
+      "${zipAlignment}B ZIPALIGN"
     }
   }
 
@@ -266,6 +300,11 @@ class LibStringAdapter(
     } else {
       itemView.setChip(null)
     }
+    itemView.contentDescription = buildItemDescription(
+      itemName,
+      itemView.libDetail.text,
+      item.rule?.label.takeIf { (GlobalValues.itemAdvancedOptions and AdvancedOptions.SHOW_MARKED_LIB) > 0 }
+    )
   }
 
   private fun setPermissionContent(
@@ -279,6 +318,10 @@ class LibStringAdapter(
       -1
     }
     setOrHighlightText(itemView.libName, itemName)
+    itemView.contentDescription = buildItemDescription(
+      itemName,
+      context.getString(R.string.permission_not_granted).takeIf { item.item.size == 0L }
+    )
   }
 
   private val metadataLinkable = setOf("string", "array", "bool", "xml", "drawable", "mipmap", "color", "dimen")
@@ -293,6 +336,7 @@ class LibStringAdapter(
 
     if (isApkPreviewMode) {
       setOrHighlightText(itemView.libSize, "<${context.getString(R.string.apk_preview_item_not_available)}>")
+      itemView.contentDescription = buildItemDescription(itemName, itemView.libSize.text)
       return
     }
 
@@ -309,6 +353,7 @@ class LibStringAdapter(
           itemView.libSize.text = item.item.source
           itemView.linkToIcon.setImageResource(R.drawable.ic_outline_change_circle_24)
           itemView.linkToIcon.setTag(R.id.resource_transformed_id, false)
+          itemView.contentDescription = buildItemDescription(itemName, itemView.libSize.text)
         } else {
           var clickedTag = false
           item.item.source?.let {
@@ -395,9 +440,17 @@ class LibStringAdapter(
             }
           }
           itemView.linkToIcon.setTag(R.id.resource_transformed_id, clickedTag)
+          itemView.contentDescription = buildItemDescription(itemName, itemView.libSize.text)
         }
       }
     }
+    itemView.contentDescription = buildItemDescription(itemName, itemView.libSize.text)
+  }
+
+  private fun buildItemDescription(vararg parts: CharSequence?): String {
+    return parts
+      .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotEmpty) }
+      .joinToString()
   }
 
   private fun createNativeLabelSpan(text: String): SpannedString = buildSpannedString {
@@ -406,9 +459,9 @@ class LibStringAdapter(
       context = context,
       text = text,
       textSize = 10.dp.toFloat(),
-      textColor = context.getColorByAttr(com.google.android.material.R.attr.colorOnSecondaryContainer),
-      backgroundColor = context.getColorByAttr(com.google.android.material.R.attr.colorSecondaryContainer),
-      borderColor = context.getColorByAttr(com.google.android.material.R.attr.colorOutline),
+      textColor = context.getColorByAttr(com.google.android.material.R.attr.colorOnSecondaryFixed),
+      backgroundColor = context.getColorByAttr(com.google.android.material.R.attr.colorSecondaryFixed),
+      borderColor = context.getColorByAttr(com.google.android.material.R.attr.colorOutlineVariant),
       borderWidth = 1f,
       cornerRadius = 5.dp.toFloat()
     )

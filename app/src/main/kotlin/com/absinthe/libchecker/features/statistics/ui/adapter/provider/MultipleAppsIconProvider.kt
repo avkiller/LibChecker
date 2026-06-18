@@ -40,7 +40,7 @@ class MultipleAppsIconProvider : BaseNodeProvider() {
   override fun convert(helper: BaseViewHolder, item: BaseNode) {
     (helper.itemView as MultipleAppsIconItemView).container.apply {
       val libReferenceItem = item as LibReference
-      icon.setIcons(libReferenceItem.referredList.toList())
+      icon.setIcons(libReferenceItem.referredList)
       count.text = libReferenceItem.referredList.size.toString()
       labelName.text = buildSpannedString {
         italic {
@@ -53,7 +53,18 @@ class MultipleAppsIconProvider : BaseNodeProvider() {
       } else {
         setOrHighlightText(libName, libReferenceItem.libName)
       }
+      helper.itemView.contentDescription = buildItemDescription(
+        labelName.text,
+        libName.text,
+        count.text
+      )
     }
+  }
+
+  private fun buildItemDescription(vararg parts: CharSequence?): String {
+    return parts
+      .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotEmpty) }
+      .joinToString()
   }
 
   private fun setOrHighlightText(view: TextView, text: CharSequence) {
