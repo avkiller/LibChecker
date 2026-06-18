@@ -35,7 +35,7 @@ class ComponentsAnalysisFragment :
     } else {
       adapter.processMap = viewModel.processesMap
       lifecycleScope.launch(Dispatchers.IO) {
-        setItemsWithFilter(viewModel.queriedText, viewModel.queriedProcess)
+        setItemsWithFilter(items, viewModel.queriedText, viewModel.queriedProcess)
       }
     }
     if (!isListReady) {
@@ -49,7 +49,8 @@ class ComponentsAnalysisFragment :
 
     adapter.apply {
       setDiffCallback(LibStringDiffUtil())
-      setEmptyView(emptyView)
+      stateView = this@ComponentsAnalysisFragment.emptyView
+      isStateViewEnable = true
     }
   }
 

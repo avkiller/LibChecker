@@ -7,9 +7,9 @@ import android.content.pm.PackageInfoHidden
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
-import androidx.annotation.RequiresApi
 import androidx.collection.arrayMapOf
 import androidx.core.content.pm.PackageInfoCompat
+import androidx.core.text.isDigitsOnly
 import com.absinthe.libchecker.R
 import com.absinthe.libchecker.app.SystemServices
 import com.absinthe.libchecker.compat.ZipFileCompat
@@ -37,16 +37,18 @@ import com.absinthe.libchecker.constant.Constants.X86_64
 import com.absinthe.libchecker.constant.Constants.X86_64_STRING
 import com.absinthe.libchecker.constant.Constants.X86_STRING
 import com.absinthe.libchecker.constant.GlobalFeatures
+import com.absinthe.libchecker.constant.GlobalValues
 import com.absinthe.libchecker.database.entity.Features
 import com.absinthe.libchecker.features.applist.detail.bean.KotlinToolingMetadata
 import com.absinthe.libchecker.features.statistics.bean.LibStringItem
 import com.absinthe.libchecker.utils.FileUtils
 import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.PackageUtils
+import com.absinthe.libchecker.utils.ShizukuManager
+import com.absinthe.libchecker.utils.apk.ApkSignatureSchemeDetector
 import com.absinthe.libchecker.utils.fromJson
 import com.absinthe.libchecker.utils.manifest.HiddenPermissionsReader
 import com.absinthe.libchecker.utils.manifest.ManifestReader
-import com.android.apksig.ApkVerifier
 import dev.rikka.tools.refine.Refine
 import hidden.DexFileHidden
 import java.io.File
@@ -56,7 +58,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okio.buffer
 import okio.source
-import rikka.material.app.LocaleDelegate
 import timber.log.Timber
 
 /**
@@ -142,7 +143,9 @@ fun PackageInfo.getStatefulPermissionsList(): List<Pair<String, Boolean>> {
   }
 
   if (flags?.size != requestedPermissions?.size) {
-    return requestedPermissions?.map { it to true }?.toMutableList()?.apply {
+    return requestedPermissions?.mapNotNull { permission ->
+      permission?.let { it to true }
+    }?.toMutableList()?.apply {
       if (hidden.isNotEmpty()) {
         hidden.forEach { (p, v) ->
           add("$p (maxSdkVersion: $v)" to false)
@@ -151,8 +154,10 @@ fun PackageInfo.getStatefulPermissionsList(): List<Pair<String, Boolean>> {
     } ?: emptyList()
   }
 
-  return requestedPermissions?.mapIndexed { index, s ->
-    s to ((flags?.get(index) ?: 0) and PackageInfo.REQUESTED_PERMISSION_GRANTED != 0)
+  return requestedPermissions?.mapIndexedNotNull { index, permission ->
+    permission?.let {
+      it to ((flags?.get(index) ?: 0) and PackageInfo.REQUESTED_PERMISSION_GRANTED != 0)
+    }
   }?.toMutableList()?.apply {
     if (hidden.isNotEmpty()) {
       hidden.forEach { (p, v) ->
@@ -398,7 +403,7 @@ fun PackageInfo.getKotlinPluginInfo(): Map<String, String?> {
         }
 
         val sourceCompatibility = kotlinAndroidTarget?.extras?.android?.sourceCompatibility
-        if (kotlinAndroidTarget != null && sourceCompatibility.isNullOrEmpty().not()) {
+        if (kotlinAndroidTarget != null && sourceCompatibility?.isDigitsOnly() == true) {
           map["Java"] = sourceCompatibility
         }
       }
@@ -644,17 +649,18 @@ suspend fun PackageInfo.getRxAndroidVersion(foundList: List<String>? = null): St
  * @return List of LibStringItem
  */
 fun PackageInfo.getSignatures(context: Context): Sequence<LibStringItem> {
+  val locale = GlobalValues.locale
   val localedContext = context.createConfigurationContext(
     Configuration(context.resources.configuration).apply {
-      setLocale(LocaleDelegate.defaultLocale)
+      setLocale(locale)
     }
   )
   val dateFormat = DateFormat.getDateTimeInstance(
     DateFormat.LONG,
     DateFormat.LONG,
-    LocaleDelegate.defaultLocale
+    locale
   )
-  return if (OsUtils.atLeastP() && signingInfo != null) {
+  val signatureArray = if (OsUtils.atLeastP() && signingInfo != null) {
     if (signingInfo!!.hasMultipleSigners()) {
       signingInfo!!.apkContentsSigners
     } else {
@@ -662,9 +668,11 @@ fun PackageInfo.getSignatures(context: Context): Sequence<LibStringItem> {
     }
   } else {
     @Suppress("DEPRECATION")
-    signatures
-  }.orEmpty().asSequence().map {
-    PackageUtils.describeSignature(localedContext, dateFormat, it, getSignatureSchemes())
+    this.signatures
+  }
+  val signatureSchemes = getSignatureSchemes()
+  return signatureArray.orEmpty().asSequence().map {
+    PackageUtils.describeSignature(localedContext, dateFormat, it, signatureSchemes)
   }
 }
 
@@ -681,16 +689,117 @@ fun PackageInfo.isPreinstalled(): Boolean {
   return lastUpdateTime <= PREINSTALLED_TIMESTAMP
 }
 
-@RequiresApi(Build.VERSION_CODES.P)
-fun PackageInfo.getDexFileOptimizationInfo(): DexFileHidden.OptimizationInfo? {
+fun PackageInfo.getDexFileOptimizationInfo(): DexFileOptimizationInfo? {
   val sourceDir = applicationInfo?.sourceDir ?: return null
-  val info = DexFileHidden.getDexFileOptimizationInfo(
-    sourceDir,
-    ABI_TO_INSTRUCTION_SET_MAP[Build.SUPPORTED_ABIS[0]]!!
-  )
-  Timber.d("getDexFileOptimizationInfo: status=${info.status}, reason=${info.reason}")
-  return info
+  return getDexFileOptimizationInfoFromPackageDump(sourceDir)
+    ?: getDexFileOptimizationInfoFromDexFile(sourceDir)
 }
+
+data class DexFileOptimizationInfo(
+  val status: String,
+  val reason: String,
+  val instructionSet: String? = null
+)
+
+private data class DexoptDumpInfo(
+  val instructionSet: String,
+  val status: String,
+  val reason: String,
+  val isPrimaryAbi: Boolean
+)
+
+private fun PackageInfo.getDexFileOptimizationInfoFromPackageDump(sourceDir: String): DexFileOptimizationInfo? {
+  if (!ShizukuManager.requireAvailable()) {
+    return null
+  }
+
+  return runCatching {
+    ShizukuManager.dumpPackageService(arrayOf(packageName))
+  }.onFailure {
+    Timber.w(it, "getDexFileOptimizationInfo: package dump failed")
+  }.getOrNull()?.let { dump ->
+    parseDexoptDump(dump, packageName, sourceDir)
+  }?.also {
+    Timber.d("getDexFileOptimizationInfo: status=${it.status}, reason=${it.reason}, isa=${it.instructionSet}")
+  }
+}
+
+private fun PackageInfo.getDexFileOptimizationInfoFromDexFile(sourceDir: String): DexFileOptimizationInfo? {
+  if (!OsUtils.atLeastP()) {
+    return null
+  }
+  val instructionSet = ABI_TO_INSTRUCTION_SET_MAP[Build.SUPPORTED_ABIS.firstOrNull()] ?: return null
+  return runCatching {
+    val info = DexFileHidden.getDexFileOptimizationInfo(sourceDir, instructionSet)
+    DexFileOptimizationInfo(info.status, info.reason, instructionSet)
+  }.onFailure {
+    Timber.w(it, "getDexFileOptimizationInfo: DexFile fallback failed")
+  }.getOrNull()?.also {
+    Timber.d("getDexFileOptimizationInfo: fallback status=${it.status}, reason=${it.reason}, isa=${it.instructionSet}")
+  }
+}
+
+private fun parseDexoptDump(
+  dump: String,
+  packageName: String,
+  sourceDir: String
+): DexFileOptimizationInfo? {
+  val entries = mutableListOf<DexoptDumpInfo>()
+  var inDexoptState = false
+  var inTargetPackage = false
+  var inTargetPath = false
+
+  for (line in dump.lineSequence()) {
+    val value = line.trim()
+    when {
+      value == "Dexopt state:" -> {
+        inDexoptState = true
+        inTargetPackage = false
+        inTargetPath = false
+      }
+
+      inDexoptState && value == "[$packageName]" -> {
+        inTargetPackage = true
+        inTargetPath = false
+      }
+
+      inTargetPackage && value.startsWith("[") && value.endsWith("]") -> {
+        if (entries.isNotEmpty()) {
+          break
+        }
+        inTargetPackage = false
+        inTargetPath = false
+      }
+
+      inTargetPackage && value.startsWith("path: ") -> {
+        if (entries.isNotEmpty()) {
+          break
+        }
+        inTargetPath = value.removePrefix("path: ").substringBefore(' ') == sourceDir
+      }
+
+      inTargetPackage && inTargetPath -> {
+        val match = DEXOPT_STATUS_PATTERN.matchEntire(value) ?: continue
+        entries += DexoptDumpInfo(
+          instructionSet = match.groupValues[1],
+          status = match.groupValues[2],
+          reason = match.groupValues[3],
+          isPrimaryAbi = match.groupValues[4].contains("[primary-abi]")
+        )
+      }
+    }
+  }
+
+  val preferredInstructionSet = ABI_TO_INSTRUCTION_SET_MAP[Build.SUPPORTED_ABIS.firstOrNull()]
+  val entry = entries.firstOrNull { it.isPrimaryAbi }
+    ?: entries.firstOrNull { it.instructionSet == preferredInstructionSet }
+    ?: entries.firstOrNull()
+  return entry?.let {
+    DexFileOptimizationInfo(it.status, it.reason, it.instructionSet)
+  }
+}
+
+private val DEXOPT_STATUS_PATTERN = Regex("""^(\S+):\s+\[status=([^\]]+)]\s+\[reason=([^\]]+)](.*)$""")
 
 // Keep in sync with `ABI_TO_INSTRUCTION_SET_MAP` in
 // libcore/libart/src/main/java/dalvik/system/VMRuntime.java.
@@ -794,7 +903,7 @@ fun PackageInfo.is16KBAligned(libs: List<LibStringItem>? = null, isApk: Boolean 
 
   return nativeLibs.isNotEmpty() &&
     nativeLibs.all { it.elfInfo.pageSize % PAGE_SIZE_16_KB == 0 } &&
-    nativeLibs.all { it.elfInfo.uncompressedAndNot16KB.not() }
+    nativeLibs.all { it.elfInfo.zipAlignment <= 0L || it.elfInfo.zipAlignment >= PAGE_SIZE_16_KB }
 }
 
 /**
@@ -839,11 +948,17 @@ fun PackageInfo.isPageSizeCompat(): Boolean {
   }.getOrElse { false }
 }
 
-fun PackageInfo.getSignatureSchemes(): ApkVerifier.Result? {
+fun PackageInfo.getSignatureSchemes(): List<String> {
+  val sourceDir = applicationInfo?.sourceDir
+  if (sourceDir.isNullOrBlank()) {
+    Timber.w("Failed to get signature schemes for package without sourceDir: $packageName")
+    return emptyList()
+  }
+
   return runCatching {
-    ApkVerifier.Builder(File(applicationInfo!!.sourceDir)).build().verify()
+    ApkSignatureSchemeDetector.detect(File(sourceDir))
   }.getOrElse {
-    Timber.e(it, "Failed to get signature schemes for package: $packageName")
-    null
+    Timber.w(it, "Failed to get signature schemes for package: $packageName")
+    emptyList()
   }
 }

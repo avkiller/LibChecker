@@ -28,6 +28,7 @@ import com.absinthe.libchecker.features.album.track.ui.view.TrackItemView
 import com.absinthe.libchecker.features.album.track.ui.view.TrackLoadingView
 import com.absinthe.libchecker.features.applist.detail.ui.view.EmptyListView
 import com.absinthe.libchecker.ui.base.BaseActivity
+import com.absinthe.libchecker.utils.extensions.applySystemBarsPadding
 import com.absinthe.libchecker.utils.extensions.getAppName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -60,6 +61,7 @@ class TrackActivity :
 
     binding.list.apply {
       adapter = this@TrackActivity.adapter
+      applySystemBarsPadding(top = true, bottom = true)
       layoutManager = LinearLayoutManager(this@TrackActivity)
       borderVisibilityChangedListener =
         BorderView.OnBorderVisibilityChangedListener { top: Boolean, _: Boolean, _: Boolean, _: Boolean ->
@@ -95,7 +97,8 @@ class TrackActivity :
           doSaveItemState(position, (view as Checkable).isChecked)
         }
       }
-      setEmptyView(TrackLoadingView(this@TrackActivity))
+      stateView = TrackLoadingView(this@TrackActivity)
+      isStateViewEnable = true
     }
 
     lifecycleScope.launch(Dispatchers.IO) {
@@ -116,7 +119,7 @@ class TrackActivity :
         adapter.setList(list)
         menu?.findItem(R.id.search)?.isVisible = true
         isListReady = true
-        adapter.setEmptyView(
+        adapter.stateView =
           EmptyListView(this@TrackActivity).apply {
             layoutParams = FrameLayout.LayoutParams(
               FrameLayout.LayoutParams.MATCH_PARENT,
@@ -125,7 +128,7 @@ class TrackActivity :
               it.gravity = Gravity.CENTER
             }
           }
-        )
+        adapter.isStateViewEnable = true
       }
     }
   }

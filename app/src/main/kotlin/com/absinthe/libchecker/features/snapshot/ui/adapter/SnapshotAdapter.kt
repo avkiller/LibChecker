@@ -22,6 +22,7 @@ import com.absinthe.libchecker.features.applist.detail.ui.view.CenterAlignImageS
 import com.absinthe.libchecker.features.snapshot.detail.bean.SnapshotDiffItem
 import com.absinthe.libchecker.features.snapshot.ui.view.SnapshotItemView
 import com.absinthe.libchecker.ui.adapter.HighlightAdapter
+import com.absinthe.libchecker.ui.animator.ParticleRemoveItemAnimator
 import com.absinthe.libchecker.utils.DateUtils
 import com.absinthe.libchecker.utils.LCAppUtils
 import com.absinthe.libchecker.utils.OsUtils
@@ -42,6 +43,10 @@ import kotlin.math.abs
 const val ARROW = "→"
 const val ARROW_REVERT = "←"
 class SnapshotAdapter(private val cardMode: CardMode = CardMode.NORMAL) : HighlightAdapter<SnapshotDiffItem>() {
+
+  init {
+    setHasStableIds(true)
+  }
 
   private val formatter by unsafeLazy {
     SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
@@ -65,7 +70,7 @@ class SnapshotAdapter(private val cardMode: CardMode = CardMode.NORMAL) : Highli
     (holder.itemView as SnapshotItemView).apply {
       if (cardMode == CardMode.DEMO || cardMode == CardMode.GET_APP_UPDATE) {
         setSmoothRoundCorner(16.dp)
-        strokeColor = context.getColorByAttr(com.google.android.material.R.attr.colorOutline)
+        strokeColor = context.getColorByAttr(com.google.android.material.R.attr.colorOutlineVariant)
       } else {
         strokeColor = Color.TRANSPARENT
         radius = 0f
@@ -317,6 +322,34 @@ class SnapshotAdapter(private val cardMode: CardMode = CardMode.NORMAL) : Highli
           updateTime.append(", APEX")
         }
       }
+      (holder.itemView as SnapshotItemView).contentDescription = buildItemDescription(
+        appName.text,
+        packageName.text,
+        versionInfo.text,
+        packageSizeInfo.text.takeIf { packageSizeInfo.isVisible },
+        apisInfo.text,
+        abiInfo.text,
+        updateTime.text.takeIf { updateTime.isVisible },
+        buildSnapshotStateDescription(context, item)
+      )
+    }
+  }
+
+  override fun getItemId(position: Int): Long {
+    if (position !in data.indices) {
+      return Long.MIN_VALUE + position
+    }
+    return stableItemIdFor(data[position])
+  }
+
+  companion object {
+    fun stableItemIdFor(item: SnapshotDiffItem): Long {
+      val state = when {
+        item.deleted -> "deleted"
+        item.newInstalled -> "new"
+        else -> "normal"
+      }
+      return ParticleRemoveItemAnimator.stableItemIdForKey("${item.packageName}:$state")
     }
   }
 
@@ -325,4 +358,19 @@ class SnapshotAdapter(private val cardMode: CardMode = CardMode.NORMAL) : Highli
     DEMO,
     GET_APP_UPDATE
   }
+}
+
+private fun buildItemDescription(vararg parts: CharSequence?): String {
+  return parts
+    .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotEmpty) }
+    .joinToString()
+}
+
+private fun buildSnapshotStateDescription(context: android.content.Context, item: SnapshotDiffItem): String {
+  return listOf(
+    item.added.takeIf { it > 0 }?.let { "${context.getString(R.string.snapshot_indicator_added)} $it" },
+    item.removed.takeIf { it > 0 }?.let { "${context.getString(R.string.snapshot_indicator_removed)} $it" },
+    item.changed.takeIf { it > 0 }?.let { "${context.getString(R.string.snapshot_indicator_changed)} $it" },
+    item.moved.takeIf { it > 0 }?.let { "${context.getString(R.string.snapshot_indicator_moved)} $it" }
+  ).filterNotNull().joinToString()
 }

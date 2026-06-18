@@ -62,8 +62,16 @@ class NativeLibItemView(context: Context) : AViewGroup(context) {
     }
 
   private var chip: Chip? = null
+  private var chipRule: Rule? = null
+  private var chipColorfulIcon = GlobalValues.isColorfulIcon
 
   fun setChip(rule: Rule?) {
+    val colorfulIcon = GlobalValues.isColorfulIcon
+    if (chipRule == rule && chipColorfulIcon == colorfulIcon) {
+      return
+    }
+    chipRule = rule
+    chipColorfulIcon = colorfulIcon
     chip = rule?.let {
       getOrCreateChip().apply {
         text = it.label
@@ -84,6 +92,8 @@ class NativeLibItemView(context: Context) : AViewGroup(context) {
 
   private fun getOrCreateChip() = chip ?: Chip(context).apply {
     isClickable = false
+    isFocusable = false
+    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     layoutParams = LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, 48.dp)
     maxWidth = (context.displayWidth * 0.45f).toInt()
     ellipsize = TextUtils.TruncateAt.MIDDLE

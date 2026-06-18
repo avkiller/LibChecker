@@ -26,7 +26,6 @@ import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.constant.GlobalValues
 import com.absinthe.libchecker.constant.OnceTag
 import com.absinthe.libchecker.constant.options.AdvancedOptions
-import com.absinthe.libchecker.data.app.LocalAppDataSource
 import com.absinthe.libchecker.database.Repositories
 import com.absinthe.libchecker.database.entity.LCItem
 import com.absinthe.libchecker.databinding.FragmentAppListBinding
@@ -36,13 +35,12 @@ import com.absinthe.libchecker.features.applist.ui.adapter.AppListDiffUtil
 import com.absinthe.libchecker.features.home.HomeViewModel
 import com.absinthe.libchecker.features.home.INavViewContainer
 import com.absinthe.libchecker.ui.adapter.VerticalSpacesItemDecoration
+import com.absinthe.libchecker.ui.animator.ParticleRemoveItemAnimator
 import com.absinthe.libchecker.ui.base.BaseActivity
 import com.absinthe.libchecker.ui.base.BaseListControllerFragment
 import com.absinthe.libchecker.ui.base.IAppBarContainer
 import com.absinthe.libchecker.utils.PackageUtils
 import com.absinthe.libchecker.utils.Telemetry
-import com.absinthe.libchecker.utils.UiUtils
-import com.absinthe.libchecker.utils.UiUtils.toCircularBitmap
 import com.absinthe.libchecker.utils.extensions.doOnMainThreadIdle
 import com.absinthe.libchecker.utils.extensions.dp
 import com.absinthe.libchecker.utils.extensions.isPreinstalled
@@ -50,7 +48,6 @@ import com.absinthe.libchecker.utils.extensions.launchDetailPage
 import com.absinthe.libchecker.utils.extensions.setSpaceFooterView
 import com.absinthe.libchecker.utils.harmony.HarmonyOsUtil
 import com.absinthe.libchecker.utils.showToast
-import com.absinthe.libchecker.view.app.RingDotsView
 import com.absinthe.libraries.utils.utils.AntiShakeUtils
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -59,6 +56,7 @@ import jonathanfinerty.once.Once
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
@@ -79,12 +77,15 @@ class AppListFragment :
 
   private val isFirstLaunch get() = !Once.beenDone(Once.THIS_APP_INSTALL, OnceTag.FIRST_LAUNCH)
   private val appAdapter = AppAdapter()
+  private val particleItemAnimator = ParticleRemoveItemAnimator()
   private var updateItemsJob: Job? = null
   private var delayShowNavigationJob: Job? = null
   private var advancedMenuBSDFragment: AdvancedMenuBSDFragment? = null
   private var isFirstRequestChange = true
   private var isSearchTextClearOnce = false
   private var firstScrollFlag = false
+  private var hasUserScrolledList = false
+  private var pendingReturnTopAfterRequestChange = false
   private var hasInitializedItems = false
 
   private lateinit var layoutManager: RecyclerView.LayoutManager
@@ -103,19 +104,20 @@ class AppListFragment :
       }
       it.setDiffCallback(AppListDiffUtil())
       it.setHasStableIds(true)
-      it.setEmptyView(
+      it.stateView =
         EmptyListView(context).apply {
           layoutParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
           )
         }
-      )
+      it.isStateViewEnable = true
     }
 
     binding.apply {
       list.apply {
         adapter = appAdapter
+        itemAnimator = particleItemAnimator
         borderDelegate = borderViewDelegate
         layoutManager = getSuitableLayoutManagerImpl(resources.configuration)
         borderVisibilityChangedListener =
@@ -130,6 +132,12 @@ class AppListFragment :
         setHasFixedSize(true)
         FastScrollerBuilder(this).useMd2Style().build()
         addOnScrollListener(object : RecyclerView.OnScrollListener() {
+          override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+            if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
+              hasUserScrolledList = true
+            }
+          }
+
           override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
             if (dx == 0 && dy == 0) {
               // scrolled by dragging scrolling bar
@@ -189,23 +197,7 @@ class AppListFragment :
           Timber.e(e)
         }
       }
-      initView.loadingView.setHighlightIconProvider(object : RingDotsView.HighlightIconProvider {
-        override suspend fun produce(emitter: RingDotsView.HighlightIconEmitter) {
-          val applications = LocalAppDataSource.getApplicationList()
-          val defaultIcon = context.packageManager.defaultActivityIcon
-          while (true) {
-            if (!initView.loadingView.isHighlightAnimationAvailable()) {
-              break
-            }
-            val ai = applications.random().applicationInfo ?: continue
-            val drawable = ai.loadIcon(context.packageManager)
-              ?.takeIf { icon -> !UiUtils.drawablesAreEqual(icon, defaultIcon) }
-              ?: continue
-
-            emitter.emit(drawable.toCircularBitmap())
-          }
-        }
-      })
+      initView.loadingView.setAppIconHighlightProvider()
     }
 
     initObserver()
@@ -413,7 +405,7 @@ class AppListFragment :
           }
 
           is HomeViewModel.Effect.PackageChanged -> {
-            context?.let { context -> homeViewModel.requestChange(context) }
+            context?.let { context -> homeViewModel.requestChange(context, it.packageChangeState) }
           }
 
           is HomeViewModel.Effect.UpdateAppListStatus -> {
@@ -454,13 +446,14 @@ class AppListFragment :
           }
 
           is HomeViewModel.Effect.RefreshList -> {
+            pendingReturnTopAfterRequestChange = true
             updateItems()
           }
 
           else -> {}
         }
       }.launchIn(lifecycleScope)
-      dbItemsFlow.onEach {
+      dbItemsFlow.distinctUntilChanged(::areAppListItemsTheSame).onEach {
         if (it.isEmpty() || (isFirstLaunch && !hasInitializedItems)) {
           initApps()
         } else if (
@@ -485,6 +478,23 @@ class AppListFragment :
     }.launchIn(lifecycleScope)
   }
 
+  private fun areAppListItemsTheSame(old: List<LCItem>, new: List<LCItem>): Boolean {
+    if (old.size != new.size) {
+      return false
+    }
+    return old.zip(new).all { (oldItem, newItem) ->
+      oldItem.packageName == newItem.packageName &&
+        oldItem.label == newItem.label &&
+        oldItem.versionName == newItem.versionName &&
+        oldItem.versionCode == newItem.versionCode &&
+        oldItem.lastUpdatedTime == newItem.lastUpdatedTime &&
+        oldItem.isSystem == newItem.isSystem &&
+        oldItem.abi == newItem.abi &&
+        oldItem.targetApi == newItem.targetApi &&
+        oldItem.variant == newItem.variant
+    }
+  }
+
   private fun updateItems(highlightRefresh: Boolean = false) {
     updateItemsJob?.cancel()
     updateItemsJob = updateItemsImpl(highlightRefresh)
@@ -493,9 +503,10 @@ class AppListFragment :
   private fun updateItemsImpl(highlightRefresh: Boolean = false) = lifecycleScope.launch(Dispatchers.IO) {
     delay(250)
     Timber.d("updateItemsImpl")
-    var filterList: MutableList<LCItem> = Repositories.lcRepository.getLCItems().toMutableList()
+    val dbItems = Repositories.lcRepository.getLCItems()
+    val dbPackageNames = dbItems.mapTo(mutableSetOf()) { it.packageName }
 
-    if (isOnlyAppItself(filterList)) {
+    if (isOnlyAppItself(dbItems)) {
       Timber.d("updateItemsImpl: only the app itself")
       if (homeViewModel.appListStatus == STATUS_NOT_START) {
         Once.clearDone(OnceTag.FIRST_LAUNCH)
@@ -506,45 +517,47 @@ class AppListFragment :
 
     val isNonNativeLibApp64Bit = android.os.Process.is64Bit()
     val options = GlobalValues.advancedOptions
+    var filterSequence = dbItems.asSequence()
     if ((options and AdvancedOptions.SHOW_SYSTEM_APPS) == 0) {
-      filterList = filterList.filter { !it.isSystem }.toMutableList()
+      filterSequence = filterSequence.filter { !it.isSystem }
     }
     if ((options and AdvancedOptions.SHOW_SYSTEM_FRAMEWORK_APPS) == 0) {
-      filterList = filterList.filter {
+      filterSequence = filterSequence.filter {
         (!it.packageName.startsWith("com.android.") && it.packageName != "android") ||
           runCatching {
             PackageUtils.getPackageInfo(it.packageName).isPreinstalled()
           }.getOrDefault(false).not()
-      }.toMutableList()
+      }
     }
     if ((options and AdvancedOptions.SHOW_OVERLAYS) == 0) {
-      filterList = filterList.filter { it.abi.toInt() != Constants.OVERLAY }.toMutableList()
+      filterSequence = filterSequence.filter { it.abi.toInt() != Constants.OVERLAY }
     }
     if ((options and AdvancedOptions.SHOW_64_BIT_APPS) == 0) {
-      filterList = filterList.filter {
+      filterSequence = filterSequence.filter {
         val trueAbi = it.abi.mod(Constants.MULTI_ARCH)
         it.abi.toInt() == Constants.OVERLAY || !PackageUtils.isAbi64Bit(trueAbi) || (trueAbi == Constants.NO_LIBS && !isNonNativeLibApp64Bit)
-      }.toMutableList()
+      }
     }
     if ((options and AdvancedOptions.SHOW_32_BIT_APPS) == 0) {
-      filterList = filterList.filter {
+      filterSequence = filterSequence.filter {
         val trueAbi = it.abi.mod(Constants.MULTI_ARCH)
         it.abi.toInt() == Constants.OVERLAY || PackageUtils.isAbi64Bit(trueAbi) || (trueAbi == Constants.NO_LIBS && isNonNativeLibApp64Bit)
-      }.toMutableList()
+      }
     }
 
     val keyword = appAdapter.highlightText
     if (keyword.isNotEmpty()) {
-      filterList = filterList.filter {
+      filterSequence = filterSequence.filter {
         it.label.contains(keyword, ignoreCase = true) ||
           it.packageName.contains(keyword, ignoreCase = true)
-      }.toMutableList()
+      }
 
       if (HarmonyOsUtil.isHarmonyOs() && keyword.contains("Harmony", true)) {
-        filterList = filterList.filter { it.variant == Constants.VARIANT_HAP }.toMutableList()
+        filterSequence = filterSequence.filter { it.variant == Constants.VARIANT_HAP }
       }
     }
 
+    val filterList = filterSequence.toMutableList()
     if ((options and AdvancedOptions.SORT_BY_NAME) > 0) {
       filterList.sortWith(compareBy({ it.abi }, { it.label }))
     } else if ((options and AdvancedOptions.SORT_BY_UPDATE_TIME) > 0) {
@@ -558,6 +571,24 @@ class AppListFragment :
     }
     withContext(Dispatchers.Main) {
       appAdapter.apply {
+        // Only apps that disappeared from the backing database get the particle effect.
+        // Newly added apps are present in filterList but absent from current adapter data,
+        // so they go through RecyclerView's normal add path instead.
+        particleItemAnimator.prepareParticleRemovals(
+          data.asSequence()
+            .filter { it.packageName !in dbPackageNames }
+            .map { ParticleRemoveItemAnimator.stableItemIdForKey(it.packageName) }
+            .toList()
+        )
+        clearPackageStateCache()
+        val shouldReturnTopAfterRequestChange = pendingReturnTopAfterRequestChange &&
+          !highlightRefresh &&
+          !hasUserScrolledList &&
+          data.isNotEmpty()
+        if (pendingReturnTopAfterRequestChange && !highlightRefresh) {
+          pendingReturnTopAfterRequestChange = false
+        }
+
         setDiffNewData(filterList) {
           if (isDetached || !isBindingInitialized()) {
             return@setDiffNewData
@@ -570,6 +601,9 @@ class AppListFragment :
           }
 
           setSpaceFooterView()
+          if (shouldReturnTopAfterRequestChange) {
+            returnTopOfList()
+          }
         }
       }
     }
@@ -577,8 +611,12 @@ class AppListFragment :
 
   private fun returnTopOfList() {
     binding.list.apply {
-      if (canScrollVertically(-1)) {
-        smoothScrollToPosition(0)
+      post {
+        when (val manager = layoutManager) {
+          is LinearLayoutManager -> manager.scrollToPositionWithOffset(0, 0)
+          is StaggeredGridLayoutManager -> manager.scrollToPositionWithOffset(0, 0)
+          else -> scrollToPosition(0)
+        }
       }
     }
   }

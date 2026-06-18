@@ -60,11 +60,11 @@ class ClassifyDialogView(context: Context, val lifecycleScope: LifecycleCoroutin
       setOnItemClickListener { _, _, position ->
         (context as? FragmentActivity)?.launchDetailPage(adapter.getItem(position))
       }
-      setEmptyView(
+      stateView =
         EmptyListView(context).apply {
           layoutParams = ViewGroup.LayoutParams(LayoutParams.MATCH_PARENT, 500.dp)
         }
-      )
+      isStateViewEnable = true
     }
     addView(header)
     addView(list)
@@ -93,6 +93,7 @@ class ClassifyDialogView(context: Context, val lifecycleScope: LifecycleCoroutin
       text.append(", ")
       text.append(SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(node.releaseDate))
       androidVersionView.text.text = text
+      androidVersionView.contentDescription = text
       addView(androidVersionView, 1)
     }
   }

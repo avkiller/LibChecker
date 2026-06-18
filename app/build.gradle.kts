@@ -8,8 +8,9 @@ plugins {
   alias(libs.plugins.ksp)
   alias(libs.plugins.moshiX)
   alias(libs.plugins.aboutlibraries)
-  id(libs.plugins.gms.get().pluginId)
-  id(libs.plugins.firebase.crashlytics.get().pluginId)
+  alias(libs.plugins.gms)
+  alias(libs.plugins.firebase.crashlytics)
+  id("build-logic")
   id("res-opt")
 }
 
@@ -37,6 +38,15 @@ setupAppModule {
     debug {
       configure<CrashlyticsExtension> {
         mappingFileUploadEnabled = false
+      }
+    }
+    release {
+      optimization {
+        enable = true
+        keepRules {
+          // https://github.com/AppDevNext/AndroidChart/blob/master/chartLib/proguard-lib.pro
+          ignoreFrom(libs.mpAndroidChart.get().module.toString())
+        }
       }
     }
   }
@@ -86,18 +96,16 @@ setupAppModule {
 androidComponents {
   onVariants { variant ->
     variant.outputs.forEach { output ->
-      // TODO: https://github.com/android/gradle-recipes/blob/cbe7c7dea2a3f5b1764756f24bf453d1235c80e2/listenToArtifacts/README.md
-      with(output as com.android.build.api.variant.impl.VariantOutputImpl) {
-        val newApkName =
-          "LibChecker-${versionName.get()}-${versionCode.get()}-${variant.buildType}.apk"
-        outputFileName = newApkName
-      }
+      output.outputFileName.set(
+        output.versionName.zip(output.versionCode) { versionName, versionCode ->
+          "LibChecker-$versionName-$versionCode-${variant.buildType}.apk"
+        }
+      )
     }
   }
 }
 
 configurations.configureEach {
-  exclude("androidx.appcompat", "appcompat")
   exclude("org.jetbrains.kotlin", "kotlin-stdlib-jdk7")
   exclude("org.jetbrains.kotlin", "kotlin-stdlib-jdk8")
 }
@@ -107,7 +115,6 @@ dependencies {
 
   implementation(libs.kotlinX.coroutines)
   // implementation(libs.androidX.appCompat)
-  implementation(libs.android.apksig)
   implementation(libs.androidX.core)
   implementation(libs.androidX.activity)
   implementation(libs.androidX.fragment)
@@ -136,7 +143,6 @@ dependencies {
 
   ksp(libs.androidX.room.compiler)
 
-  implementation(libs.lottie)
   implementation(libs.aboutlibraries.core)
   implementation(libs.aboutlibraries.ui)
   implementation(libs.brvah)

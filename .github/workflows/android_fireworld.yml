@@ -2,10 +2,19 @@ name: Android build for fireworld
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Version for this release'
+        type: string
+        default: '2.5.4'
+        required: true
 
 env:
   APP_CENTER_SECRET: ${{secrets.APP_CENTER_SECRET}}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE20: true
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -13,14 +22,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
-          java-version: 22
-      - uses: gradle/actions/setup-gradle@v4
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v6
         with:
           cache-encryption-key: q7iF8OuxPFqECZ5mVlqj7A==
       - name: Retrieve version
@@ -76,20 +85,20 @@ jobs:
           
       - name: Upload built Foss apk
         # if: success() && github.event_name != 'pull_request' && github.repository == 'LibChecker/LibChecker'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Foss
           path: ${{ github.workspace }}/app/build/outputs/apk/foss/release
       - name: Upload built Market apk
         # if: success() && github.event_name != 'pull_request' && github.repository == 'LibChecker/LibChecker'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Market
           path: ${{ github.workspace }}/app/build/outputs/apk/market/release
       - name: Upload mappings
         if: false
         # if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mappings
           path: "app/build/outputs/mapping/marketRelease"
@@ -129,7 +138,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           prerelease: true
-          tag_name: ${{ env.LATEST_TAG }}
+          tag_name: ${{ inputs.tag_name }}
           files: |
             ${{ steps.apk-path.outputs.foss_path }}
             ${{ steps.apk-path.outputs.market_path }}

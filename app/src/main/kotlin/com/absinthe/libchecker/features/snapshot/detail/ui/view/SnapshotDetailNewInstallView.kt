@@ -15,6 +15,7 @@ class SnapshotDetailNewInstallView(context: Context) : AViewGroup(context) {
   private val image = ImageView(context).apply {
     layoutParams = LayoutParams(150.dp, 150.dp)
     setImageResource(R.drawable.ic_yes)
+    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     addView(this)
   }
 
@@ -27,9 +28,13 @@ class SnapshotDetailNewInstallView(context: Context) : AViewGroup(context) {
         it.topMargin = 16.dp
       }
       text = context.getString(R.string.snapshot_detail_new_install_title)
-      setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceHeadline6))
+      setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceTitleLarge))
       addView(this)
     }
+
+  init {
+    contentDescription = text.text
+  }
 
   override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
     super.onMeasure(widthMeasureSpec, heightMeasureSpec)

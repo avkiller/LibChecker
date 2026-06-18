@@ -34,7 +34,9 @@ import android.util.AttributeSet
 import android.view.SoundEffectConstants
 import android.view.View
 import android.view.ViewOutlineProvider
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.animation.AnimationUtils
+import android.widget.CheckBox
 import android.widget.Checkable
 import android.widget.TextView
 import androidx.annotation.CallSuper
@@ -89,7 +91,9 @@ class CheckableChipView @JvmOverloads constructor(
   /**
    * Sets the text to be displayed.
    */
-  var text: CharSequence by viewProperty("", requestLayout = true)
+  var text: CharSequence by viewProperty("", requestLayout = true) {
+    contentDescription = it
+  }
 
   /**
    * Sets the textSize to be displayed.
@@ -116,7 +120,15 @@ class CheckableChipView @JvmOverloads constructor(
    */
   var onCheckedChangeListener: ((view: CheckableChipView, checked: Boolean) -> Unit)? = null
 
-  var textColorPair = Color.BLACK to Color.WHITE
+  var textColorPair = Color.TRANSPARENT to Color.TRANSPARENT
+    set(value) {
+      field = value
+      checkedTextColor = if (isChecked) {
+        value.first
+      } else {
+        value.second
+      }
+    }
 
   private var targetProgress: Float = 0f
 
@@ -149,6 +161,7 @@ class CheckableChipView @JvmOverloads constructor(
   init {
     clipToOutline = true
     isClickable = true
+    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
 
     context.withStyledAttributes(
       set = attrs,
@@ -163,10 +176,11 @@ class CheckableChipView @JvmOverloads constructor(
           getDimensionOrThrow(R.styleable.CheckableChipView_ccv_outlineCornerRadius)
       }
 
-      checkedColor = getColor(R.styleable.CheckableChipView_android_color, checkedColor)
-      checkedTextColor =
-        getColor(R.styleable.CheckableChipView_ccv_checkedTextColor, Color.TRANSPARENT)
       defaultTextColor = getColorOrThrow(R.styleable.CheckableChipView_android_textColor)
+      checkedColor = getColor(R.styleable.CheckableChipView_android_color, checkedColor)
+      val resolvedCheckedTextColor =
+        getColor(R.styleable.CheckableChipView_ccv_checkedTextColor, defaultTextColor)
+      textColorPair = resolvedCheckedTextColor to defaultTextColor
 
       getString(R.styleable.CheckableChipView_android_text)?.let { text = it }
       textSize =
@@ -381,6 +395,16 @@ class CheckableChipView @JvmOverloads constructor(
       playSoundEffect(SoundEffectConstants.CLICK)
     }
     return handled
+  }
+
+  @Suppress("DEPRECATION")
+  override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+    super.onInitializeAccessibilityNodeInfo(info)
+    info.className = CheckBox::class.java.name
+    info.text = text
+    info.isCheckable = true
+    info.isChecked = isChecked
+    info.isClickable = isClickable
   }
 
   override fun isChecked() = targetProgress == 1f

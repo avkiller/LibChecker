@@ -36,7 +36,7 @@ class SignaturesAnalysisFragment : BaseDetailFragment<FragmentLibComponentBindin
       emptyView.text.text = getString(R.string.uncharted_territory)
     } else {
       lifecycleScope.launch(Dispatchers.IO) {
-        setItemsWithFilter(viewModel.queriedText, null)
+        setItemsWithFilter(items, viewModel.queriedText, null)
       }
     }
 
@@ -50,7 +50,7 @@ class SignaturesAnalysisFragment : BaseDetailFragment<FragmentLibComponentBindin
     binding.list.adapter = adapter
 
     adapter.apply {
-      animationEnable = true
+      animationEnable = false
       setOnItemClickListener { _, view, position ->
         if (AntiShakeUtils.isInvalidClick(view)) {
           return@setOnItemClickListener
@@ -63,7 +63,8 @@ class SignaturesAnalysisFragment : BaseDetailFragment<FragmentLibComponentBindin
         true
       }
       setDiffCallback(LibStringDiffUtil())
-      setEmptyView(emptyView)
+      stateView = this@SignaturesAnalysisFragment.emptyView
+      isStateViewEnable = true
     }
 
     viewModel.apply {

@@ -11,6 +11,7 @@ import androidx.core.view.marginRight
 import com.absinthe.libchecker.R
 import com.absinthe.libchecker.utils.extensions.dp
 import com.absinthe.libchecker.utils.extensions.getColorByAttr
+import com.absinthe.libchecker.utils.extensions.getColorStateListByAttr
 import com.absinthe.libchecker.utils.extensions.getDimensionPixelSize
 import com.absinthe.libchecker.utils.extensions.getResourceIdByAttr
 import com.absinthe.libchecker.utils.extensions.setSmoothRoundCorner
@@ -26,7 +27,8 @@ class DeveloperItemView(context: Context) : MaterialCardView(context) {
 
   init {
     setSmoothRoundCorner(16.dp)
-    strokeColor = context.getColorByAttr(com.google.android.material.R.attr.colorOutline)
+    strokeColor = context.getColorByAttr(com.google.android.material.R.attr.colorOutlineVariant)
+    setCardBackgroundColor(context.getColorStateListByAttr(com.google.android.material.R.attr.colorSurfaceContainerHigh))
     addView(container)
   }
 
@@ -36,6 +38,7 @@ class DeveloperItemView(context: Context) : MaterialCardView(context) {
       id = android.R.id.icon
       val iconSize = context.getDimensionPixelSize(R.dimen.app_icon_size)
       layoutParams = FrameLayout.LayoutParams(iconSize, iconSize)
+      importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
       addView(this)
     }
 
@@ -59,7 +62,7 @@ class DeveloperItemView(context: Context) : MaterialCardView(context) {
         it.marginStart = 8.dp
         it.marginEnd = 8.dp
       }
-      setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceSubtitle2))
+      setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceTitleSmall))
       addView(this)
     }
 

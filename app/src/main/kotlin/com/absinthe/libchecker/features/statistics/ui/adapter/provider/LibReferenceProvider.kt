@@ -15,6 +15,7 @@ import com.absinthe.libchecker.annotation.NATIVE
 import com.absinthe.libchecker.annotation.PERMISSION
 import com.absinthe.libchecker.annotation.isComponentType
 import com.absinthe.libchecker.constant.GlobalValues
+import com.absinthe.libchecker.database.RulesRepository
 import com.absinthe.libchecker.features.applist.detail.ui.LibDetailDialogFragment
 import com.absinthe.libchecker.features.statistics.bean.LibReference
 import com.absinthe.libchecker.features.statistics.ui.adapter.LibReferenceAdapter
@@ -22,10 +23,10 @@ import com.absinthe.libchecker.features.statistics.ui.view.LibReferenceItemView
 import com.absinthe.libchecker.ui.base.BaseActivity
 import com.absinthe.libchecker.utils.extensions.getDimensionPixelSize
 import com.absinthe.libchecker.utils.extensions.tintHighlightText
-import com.absinthe.rulesbundle.LCRules
 import com.chad.library.adapter.base.entity.node.BaseNode
 import com.chad.library.adapter.base.provider.BaseNodeProvider
 import com.chad.library.adapter.base.viewholder.BaseViewHolder
+import java.text.NumberFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,13 +59,22 @@ class LibReferenceProvider : BaseNodeProvider() {
   override fun convert(helper: BaseViewHolder, item: BaseNode) {
     (helper.itemView as LibReferenceItemView).container.apply {
       val libReferenceItem = item as LibReference
-      count.text = libReferenceItem.referredList.size.toString()
+      val canOpenDetail = libReferenceItem.type == NATIVE ||
+        isComponentType(libReferenceItem.type) ||
+        libReferenceItem.type == ACTION
+      count.text = NumberFormat.getIntegerInstance().format(libReferenceItem.referredList.size)
+      icon.importantForAccessibility = if (canOpenDetail) {
+        View.IMPORTANT_FOR_ACCESSIBILITY_YES
+      } else {
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO
+      }
 
       setOrHighlightText(libName, libReferenceItem.libName)
 
       libReferenceItem.rule?.let {
         icon.apply {
           setImageResource(it.iconRes)
+          contentDescription = it.label
 
           if (!GlobalValues.isColorfulIcon && !it.isSimpleColorIcon) {
             this.drawable.mutate().colorFilter =
@@ -74,11 +84,14 @@ class LibReferenceProvider : BaseNodeProvider() {
 
         setOrHighlightText(labelName, it.label)
       } ?: let {
-        if (libReferenceItem.type == PERMISSION && libReferenceItem.libName.startsWith("android.permission")) {
+        val isAndroidGroupPermission = libReferenceItem.type == PERMISSION && libReferenceItem.libName.startsWith("android.permission")
+        val isAndroidGroupAction = libReferenceItem.type == ACTION && libReferenceItem.libName.startsWith("android.intent.action")
+        if (isAndroidGroupPermission || isAndroidGroupAction) {
           icon.setImageResource(com.absinthe.lc.rulesbundle.R.drawable.ic_lib_android)
         } else {
           icon.setImageResource(R.drawable.ic_question)
         }
+        icon.contentDescription = libReferenceItem.libName
 
         labelName.text = buildSpannedString {
           italic {
@@ -88,6 +101,11 @@ class LibReferenceProvider : BaseNodeProvider() {
           append(" ")
         }
       }
+      helper.itemView.contentDescription = buildItemDescription(
+        labelName.text,
+        libName.text,
+        count.text
+      )
     }
   }
 
@@ -99,7 +117,7 @@ class LibReferenceProvider : BaseNodeProvider() {
         val name = ref.libName
 
         (context as? LifecycleOwner)?.lifecycleScope?.launch(Dispatchers.IO) {
-          val regexName = LCRules.getRule(name, ref.type, true)?.regexName
+          val regexName = RulesRepository.getRule(name, ref.type, true)?.regexName
 
           withContext(Dispatchers.Main) {
             (context as BaseActivity<*>).findViewById<View>(androidx.appcompat.R.id.search_src_text)?.clearFocus()
@@ -117,5 +135,11 @@ class LibReferenceProvider : BaseNodeProvider() {
     } else {
       view.text = text
     }
+  }
+
+  private fun buildItemDescription(vararg parts: CharSequence?): String {
+    return parts
+      .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotEmpty) }
+      .joinToString()
   }
 }

@@ -1,8 +1,8 @@
 package com.absinthe.libchecker.features.album.backup.ui
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
-import android.content.res.Resources
 import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -13,10 +13,17 @@ import android.widget.FrameLayout
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import androidx.core.view.isVisible
+import androidx.core.view.updateLayoutParams
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.Preference
+import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceFragmentCompat
+import androidx.preference.PreferenceGroup
+import androidx.preference.PreferenceGroupAdapter
+import androidx.preference.SwitchPreferenceCompat
+import androidx.preference.TwoStatePreference
 import androidx.recyclerview.widget.RecyclerView
 import com.absinthe.libchecker.LibCheckerApp
 import com.absinthe.libchecker.R
@@ -24,6 +31,7 @@ import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.constant.OnceTag
 import com.absinthe.libchecker.database.LCDatabase
 import com.absinthe.libchecker.database.Repositories
+import com.absinthe.libchecker.database.RulesRepository
 import com.absinthe.libchecker.database.backup.RoomBackup
 import com.absinthe.libchecker.databinding.ActivityBackupBinding
 import com.absinthe.libchecker.features.home.ui.MainActivity
@@ -34,8 +42,13 @@ import com.absinthe.libchecker.utils.StorageUtils
 import com.absinthe.libchecker.utils.UiUtils
 import com.absinthe.libchecker.utils.extensions.addBackStateHandler
 import com.absinthe.libchecker.utils.extensions.addPaddingTop
+import com.absinthe.libchecker.utils.extensions.applySystemBarsPadding
+import com.absinthe.libchecker.utils.extensions.doOnMainThreadIdle
 import com.absinthe.libchecker.utils.extensions.dp
+import com.absinthe.libchecker.utils.extensions.requireAvailableCacheDir
+import com.absinthe.libchecker.utils.extensions.setBottomPaddingSpace
 import com.absinthe.libchecker.utils.showToast
+import com.google.android.material.card.MaterialCardView
 import com.jakewharton.processphoenix.ProcessPhoenix
 import java.io.File
 import java.text.SimpleDateFormat
@@ -77,14 +90,6 @@ class BackupActivity : BaseActivity<ActivityBackupBinding>() {
         startActivity(intent)
         finish()
       }
-    )
-  }
-
-  override fun onApplyUserThemeResource(theme: Resources.Theme, isDecorView: Boolean) {
-    super.onApplyUserThemeResource(theme, isDecorView)
-    theme.applyStyle(
-      rikka.material.preference.R.style.ThemeOverlay_Rikka_Material3_Preference,
-      true
     )
   }
 
@@ -152,6 +157,7 @@ class BackupActivity : BaseActivity<ActivityBackupBinding>() {
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
       setPreferencesFromResource(R.xml.album_backup, null)
+      preferenceScreen.applyM3eLayoutResources()
 
       findPreference<Preference>(Constants.PREF_LOCAL_BACKUP)?.apply {
         setOnPreferenceClickListener {
@@ -161,7 +167,7 @@ class BackupActivity : BaseActivity<ActivityBackupBinding>() {
           val formatted = simpleDateFormat.format(date)
 
           if (StorageUtils.isExternalStorageWritable) {
-            if (FileUtils.getFileSize(Repositories.getLCDatabaseFile()) > 100 * 1024 * 1024) {
+            if (FileUtils.getFileSize(RulesRepository.getDatabaseFile()) > 100 * 1024 * 1024) {
               loadingDialog = UiUtils.createLoadingDialog(requireActivity())
               loadingDialog?.show()
               roomBackup
@@ -223,14 +229,19 @@ class BackupActivity : BaseActivity<ActivityBackupBinding>() {
         parent,
         savedInstanceState
       ) as BorderRecyclerView
+      recyclerView.id = android.R.id.list
       recyclerView.fixEdgeEffect()
       recyclerView.overScrollMode = RecyclerView.OVER_SCROLL_NEVER
+      recyclerView.isVerticalScrollBarEnabled = false
+      recyclerView.applySystemBarsPadding(bottom = true)
+
+      doOnMainThreadIdle {
+        recyclerView.setBottomPaddingSpace()
+      }
 
       val lp = recyclerView.layoutParams
       if (lp is FrameLayout.LayoutParams) {
-        lp.rightMargin =
-          recyclerView.context.resources.getDimension(rikka.material.R.dimen.rd_activity_horizontal_margin)
-            .toInt()
+        lp.rightMargin = recyclerView.context.resources.getDimension(R.dimen.normal_padding).toInt()
         lp.leftMargin = lp.rightMargin
       }
 
@@ -240,7 +251,110 @@ class BackupActivity : BaseActivity<ActivityBackupBinding>() {
             it.binding.appbar.isLifted = !top
           }
         }
+      recyclerView.addOnChildAttachStateChangeListener(
+        object : RecyclerView.OnChildAttachStateChangeListener {
+          override fun onChildViewAttachedToWindow(view: View) {
+            styleBackupPreferenceItem(recyclerView, view)
+          }
+
+          override fun onChildViewDetachedFromWindow(view: View) = Unit
+        }
+      )
       return recyclerView
+    }
+
+    private fun Preference.applyM3eLayoutResources() {
+      when (this) {
+        is PreferenceCategory -> {
+          layoutResource = R.layout.preference_category_m3e
+          isIconSpaceReserved = false
+        }
+
+        is SwitchPreferenceCompat -> {
+          layoutResource = R.layout.preference_m3e
+          widgetLayoutResource = R.layout.preference_widget_material_switch
+          isIconSpaceReserved = true
+        }
+
+        else -> {
+          layoutResource = R.layout.preference_m3e
+          isIconSpaceReserved = true
+        }
+      }
+
+      if (this is PreferenceGroup) {
+        for (index in 0 until preferenceCount) {
+          getPreference(index).applyM3eLayoutResources()
+        }
+      }
+    }
+
+    @SuppressLint("RestrictedApi")
+    private fun styleBackupPreferenceItem(recyclerView: RecyclerView, itemView: View) {
+      val adapter = recyclerView.adapter as? PreferenceGroupAdapter ?: return
+      val position = recyclerView.getChildAdapterPosition(itemView)
+      if (position == RecyclerView.NO_POSITION) return
+
+      val preference = adapter.getItem(position)
+      val card = itemView as? MaterialCardView ?: return
+      if (!preference.isBackupRowPreference()) return
+
+      val previous = if (position > 0) adapter.getItem(position - 1) else null
+      val next = if (position < adapter.itemCount - 1) adapter.getItem(position + 1) else null
+      val isFirstInGroup = !previous.isBackupRowPreference()
+      val isLastInGroup = !next.isBackupRowPreference()
+      val outerRadius = resources.getDimension(R.dimen.settings_preference_corner_radius)
+      val innerRadius = resources.getDimension(R.dimen.settings_preference_inner_corner_radius)
+      val topRadius = if (isFirstInGroup) outerRadius else innerRadius
+      val bottomRadius = if (isLastInGroup) outerRadius else innerRadius
+
+      card.shapeAppearanceModel = card.shapeAppearanceModel.toBuilder()
+        .setTopLeftCornerSize(topRadius)
+        .setTopRightCornerSize(topRadius)
+        .setBottomLeftCornerSize(bottomRadius)
+        .setBottomRightCornerSize(bottomRadius)
+        .build()
+
+      itemView.updateLayoutParams<ViewGroup.MarginLayoutParams> {
+        topMargin = if (isFirstInGroup) {
+          0
+        } else {
+          resources.getDimensionPixelSize(R.dimen.settings_preference_card_spacing)
+        }
+        bottomMargin = 0
+      }
+
+      val hasSwitch = preference is TwoStatePreference
+      itemView.findViewById<View>(android.R.id.widget_frame)?.isVisible = hasSwitch
+      itemView.findViewById<View>(R.id.settings_preference_chevron)?.isVisible = false
+      itemView.findViewById<View>(android.R.id.title)?.importantForAccessibility =
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO
+      itemView.findViewById<View>(android.R.id.summary)?.importantForAccessibility =
+        View.IMPORTANT_FOR_ACCESSIBILITY_NO
+      itemView.contentDescription = buildPreferenceDescription(preference)
+    }
+
+    private fun Preference?.isBackupRowPreference(): Boolean {
+      return this != null && this !is PreferenceCategory
+    }
+
+    private fun buildPreferenceDescription(preference: Preference?): String {
+      val parts = mutableListOf<CharSequence?>(
+        preference?.title,
+        preference?.summary
+      )
+      if (preference is TwoStatePreference) {
+        parts += getString(
+          if (preference.isChecked) {
+            R.string.array_dark_mode_on
+          } else {
+            R.string.array_dark_mode_off
+          }
+        )
+      }
+      return parts
+        .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotEmpty) }
+        .joinToString()
     }
 
     private fun restoreDatabase(uri: Uri) {
@@ -252,7 +366,7 @@ class BackupActivity : BaseActivity<ActivityBackupBinding>() {
               dialog.show()
               if (uri.toString().endsWith(".sqlite3")) {
                 lifecycleScope.launch(Dispatchers.IO) {
-                  val restoreFile = File(activity.externalCacheDir, "restore.sqlite3")
+                  val restoreFile = File(activity.requireAvailableCacheDir(), "restore.sqlite3")
                   inputStream.source().buffer().use { source ->
                     restoreFile.outputStream().sink().buffer().use { sink ->
                       source.readAll(sink)

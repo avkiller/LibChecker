@@ -34,6 +34,7 @@ class PermissionInfoBottomSheetView(context: Context) :
       it.topMargin = 4.dp
     }
     setBackgroundResource(R.drawable.bg_circle_outline)
+    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
   }
 
   val title = AppCompatTextView(
@@ -127,6 +128,7 @@ class PermissionInfoBottomSheetView(context: Context) :
 
     val icon = AppCompatImageView(context).apply {
       layoutParams = LayoutParams(24.dp, 24.dp)
+      importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
     val tip = AppCompatTextView(context).apply {
@@ -158,6 +160,13 @@ class PermissionInfoBottomSheetView(context: Context) :
       addView(text)
     }
 
+    fun updateContentDescription() {
+      contentDescription = listOf(tip.text, text.text)
+        .map { it.toString().trim() }
+        .filter(String::isNotEmpty)
+        .joinToString()
+    }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
       super.onMeasure(widthMeasureSpec, heightMeasureSpec)
       icon.autoMeasure()
@@ -187,6 +196,7 @@ class PermissionInfoBottomSheetView(context: Context) :
     private val icon = AppCompatImageView(context).apply {
       layoutParams = LayoutParams(64.dp, 64.dp)
       setImageResource(R.drawable.ic_failed)
+      importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
     private val notFoundText = AppCompatTextView(context).apply {
@@ -195,7 +205,7 @@ class PermissionInfoBottomSheetView(context: Context) :
         ViewGroup.LayoutParams.WRAP_CONTENT
       )
       text = context.getString(R.string.not_found)
-      setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBody2))
+      setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBodyMedium))
     }
 
     init {
@@ -228,7 +238,7 @@ class PermissionInfoBottomSheetView(context: Context) :
       )
       icon.setImageResource(R.drawable.ic_label)
       tip.text = context.getString(R.string.lib_detail_label_tip)
-      text.setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceSubtitle2))
+      text.setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceTitleSmall))
     }
 
     val description = PermissionItemView(context).apply {
@@ -238,7 +248,7 @@ class PermissionInfoBottomSheetView(context: Context) :
       )
       icon.setImageResource(R.drawable.ic_content)
       tip.text = context.getString(R.string.lib_detail_description_tip)
-      text.setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBody2))
+      text.setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceBodyMedium))
     }
 
     init {

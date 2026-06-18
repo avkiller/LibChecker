@@ -3,6 +3,7 @@ package com.absinthe.libchecker.features.chart.ui.view
 import android.content.Context
 import android.util.TypedValue
 import android.view.ContextThemeWrapper
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.appcompat.widget.AppCompatImageButton
@@ -35,6 +36,7 @@ class ChartDetailItemView(context: Context) : FrameLayout(context) {
       val iconSize = context.getDimensionPixelSize(R.dimen.app_icon_size)
       layoutParams = FrameLayout.LayoutParams(iconSize, iconSize)
       setBackgroundResource(R.drawable.bg_circle_secondary_container)
+      importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
       addView(this)
     }
 
@@ -62,7 +64,7 @@ class ChartDetailItemView(context: Context) : FrameLayout(context) {
           ViewGroup.LayoutParams.WRAP_CONTENT,
           ViewGroup.LayoutParams.WRAP_CONTENT
         )
-        setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceHeadline4))
+        setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceHeadlineMedium))
         addView(this)
       }
 

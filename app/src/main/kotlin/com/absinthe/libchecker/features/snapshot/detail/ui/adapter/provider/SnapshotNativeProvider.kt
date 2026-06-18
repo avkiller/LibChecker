@@ -6,6 +6,7 @@ import androidx.core.graphics.drawable.toDrawable
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.absinthe.libchecker.R
+import com.absinthe.libchecker.database.RulesRepository
 import com.absinthe.libchecker.features.applist.detail.ui.LibDetailDialogFragment
 import com.absinthe.libchecker.features.snapshot.detail.bean.ADDED
 import com.absinthe.libchecker.features.snapshot.detail.bean.CHANGED
@@ -16,7 +17,6 @@ import com.absinthe.libchecker.ui.base.BaseActivity
 import com.absinthe.libchecker.utils.extensions.getColor
 import com.absinthe.libraries.utils.utils.AntiShakeUtils
 import com.absinthe.libraries.utils.utils.UiUtils
-import com.absinthe.rulesbundle.LCRules
 import com.chad.library.adapter.base.entity.node.BaseNode
 import com.chad.library.adapter.base.provider.BaseNodeProvider
 import com.chad.library.adapter.base.viewholder.BaseViewHolder
@@ -64,6 +64,11 @@ class SnapshotNativeProvider : BaseNodeProvider() {
           else -> throw IllegalArgumentException("wrong diff type")
         }
       )
+      helper.itemView.contentDescription = buildItemDescription(
+        getStatusLabel(snapshotItem.diffType),
+        snapshotItem.title,
+        snapshotItem.extra
+      )
 
       val baseColor = colorRes.getColor(context)
       val alpha = if (UiUtils.isDarkMode()) {
@@ -75,10 +80,16 @@ class SnapshotNativeProvider : BaseNodeProvider() {
       background = alphaColor.toDrawable()
 
       (this@SnapshotNativeProvider.context as? LifecycleOwner)?.lifecycleScope?.launch(Dispatchers.IO) {
-        val rule = LCRules.getRule(snapshotItem.name, snapshotItem.itemType, true)
+        val rule = RulesRepository.getRule(snapshotItem.name, snapshotItem.itemType, true)
 
         withContext(Dispatchers.Main) {
           setChip(rule, alphaColor)
+          helper.itemView.contentDescription = buildItemDescription(
+            getStatusLabel(snapshotItem.diffType),
+            snapshotItem.title,
+            snapshotItem.extra,
+            rule?.label
+          )
           if (rule != null) {
             setChipOnClickListener {
               if (AntiShakeUtils.isInvalidClick(it)) {
@@ -96,5 +107,22 @@ class SnapshotNativeProvider : BaseNodeProvider() {
         }
       }
     }
+  }
+
+  private fun buildItemDescription(vararg parts: CharSequence?): String {
+    return parts
+      .mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotEmpty) }
+      .joinToString()
+  }
+
+  private fun getStatusLabel(status: Int): String {
+    return context.getString(
+      when (status) {
+        ADDED -> R.string.snapshot_indicator_added
+        REMOVED -> R.string.snapshot_indicator_removed
+        CHANGED -> R.string.snapshot_indicator_changed
+        else -> android.R.string.untitled
+      }
+    )
   }
 }
