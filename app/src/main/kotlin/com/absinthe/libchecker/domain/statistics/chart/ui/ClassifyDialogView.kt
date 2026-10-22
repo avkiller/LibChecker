@@ -1,0 +1,102 @@
+package com.absinthe.libchecker.domain.statistics.chart.ui
+
+import android.content.Context
+import android.view.ViewGroup
+import androidx.appcompat.widget.AppCompatTextView
+import androidx.core.view.isVisible
+import com.absinthe.libchecker.domain.app.list.model.AppListRenderState
+import com.absinthe.libchecker.domain.app.list.ui.adapter.AppAdapter
+import com.absinthe.libchecker.domain.statistics.chart.model.AndroidVersionLabelDisplayData
+import com.absinthe.libchecker.domain.statistics.chart.model.ClassifyDialogAction
+import com.absinthe.libchecker.domain.statistics.chart.model.ClassifyDialogState
+import com.absinthe.libchecker.domain.statistics.chart.ui.view.AndroidVersionLabelView
+import com.absinthe.libchecker.ui.app.BottomSheetRecyclerView
+import com.absinthe.libchecker.utils.extensions.addPaddingTop
+import com.absinthe.libchecker.utils.extensions.dp
+import com.absinthe.libchecker.utils.extensions.getResourceIdByAttr
+import com.absinthe.libchecker.view.app.BottomSheetScaffoldView
+import com.absinthe.libchecker.view.app.EmptyListView
+import me.zhanghai.android.fastscroll.FastScrollerBuilder
+
+class ClassifyDialogView(context: Context) : BottomSheetScaffoldView(context) {
+
+  private var onAction: (ClassifyDialogAction) -> Unit = {}
+  private val adapter = AppAdapter(AppAdapter.CardMode.TRANSPARENT)
+
+  private val list = BottomSheetRecyclerView(context).apply {
+    configureVerticalList()
+    layoutParams = LayoutParams(
+      LayoutParams.MATCH_PARENT,
+      LayoutParams.MATCH_PARENT,
+      1.0f
+    ).also {
+      it.topMargin = 4.dp
+    }
+    adapter = this@ClassifyDialogView.adapter
+    FastScrollerBuilder(this).useMd2Style().build()
+  }
+
+  private val subtitle = AppCompatTextView(context).apply {
+    layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
+    gravity = android.view.Gravity.CENTER
+    setTextAppearance(context.getResourceIdByAttr(com.google.android.material.R.attr.textAppearanceTitleSmall))
+    setPadding(16.dp, 0, 16.dp, 4.dp)
+  }
+
+  init {
+    addPaddingTop(16.dp)
+    adapter.apply {
+      setOnItemClickListener { _, _, position ->
+        data.getOrNull(position)?.let {
+          onAction(ClassifyDialogAction.OpenApp(it))
+        }
+      }
+      stateView =
+        EmptyListView(context).apply {
+          layoutParams = ViewGroup.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+        }
+      isStateViewEnable = true
+    }
+    addView(subtitle)
+    addView(list)
+  }
+
+  private val androidVersionView = AndroidVersionLabelView(context).apply {
+    layoutParams = LayoutParams(
+      LayoutParams.MATCH_PARENT,
+      LayoutParams.WRAP_CONTENT
+    )
+    setPadding(0, 4.dp, 0, 4.dp)
+  }
+
+  fun bind(
+    state: ClassifyDialogState,
+    onAction: (ClassifyDialogAction) -> Unit
+  ) {
+    this.onAction = onAction
+    header.title.text = state.title
+    subtitle.text = state.subtitle
+    subtitle.isVisible = state.subtitle != null
+    bindAndroidVersion(state.androidVersion)
+    adapter.bind(
+      AppListRenderState(
+        itemViewStates = state.itemViewStates,
+        itemChips = state.itemChips
+      )
+    )
+    adapter.setList(state.items)
+  }
+
+  private fun bindAndroidVersion(data: AndroidVersionLabelDisplayData?) {
+    if (data == null) {
+      if (androidVersionView.parent != null) {
+        removeView(androidVersionView)
+      }
+    } else {
+      androidVersionView.bind(data)
+      if (androidVersionView.parent == null) {
+        addView(androidVersionView, 2)
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 package com.absinthe.libchecker.api
 
-import com.absinthe.libchecker.api.request.VERSION
+import com.absinthe.libchecker.compat.DnsCompat
 import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.constant.GlobalValues
 import com.absinthe.libchecker.utils.JsonUtil
@@ -10,7 +10,6 @@ import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 
-private const val BRANCH_MASTER = "master"
 private const val WORKING_BRANCH = "v4"
 
 object ApiManager {
@@ -24,6 +23,7 @@ object ApiManager {
     "https://github.com/LibChecker/LibChecker-Rules/issues/new?labels=&template=submit_new_rule.yml"
 
   const val GITHUB_API_REPO_INFO = "https://api.github.com/repos/{owner}/{repo}"
+  const val GITHUB_API_REPO_CONTRIBUTORS = "https://api.github.com/repos/{owner}/{repo}/contributors"
 
   const val ANDROID_VERSION_DISTRIBUTION_URL = "https://dl.google.com/android/studio/metadata/distributions.json"
 
@@ -36,13 +36,37 @@ object ApiManager {
       else -> GITHUB_ROOT_URL
     }
 
-  val rulesBundleUrl = "${root}cloud/rules/v$VERSION/rules.db"
+  val rulesRootsInPreferenceOrder: List<String>
+    get() = when (GlobalValues.repo) {
+      Constants.REPO_GITLAB -> listOf(GITLAB_ROOT_URL, GITHUB_ROOT_URL)
+      else -> listOf(GITHUB_ROOT_URL, GITLAB_ROOT_URL)
+    }
+
+  val rulesV5Root get() = root.replace("/v4/", "/rules-data/")
+
+  val chartRulesManifestUrl = "${GITHUB_ROOT_URL}chart/cloud/v1/manifest.json"
+  val chartRulesBundleUrl = "${GITHUB_ROOT_URL}chart/cloud/v1/chart.bundle"
 
   val okHttpClient by unsafeLazy {
     OkHttpClient.Builder()
       .connectTimeout(30, TimeUnit.SECONDS)
       .readTimeout(30, TimeUnit.SECONDS)
       .writeTimeout(30, TimeUnit.SECONDS)
+      .apply {
+        // Enables Encrypted Client Hello where the platform and network security config allow it.
+        DnsCompat.echCapableDns?.let(::dns)
+      }
+      .addInterceptor { chain ->
+        val request = chain.request()
+        val isOfficialGitHubApi =
+          request.url.scheme == "https" && request.url.host == "api.github.com"
+        val safeRequest = if (request.header("Authorization") != null && !isOfficialGitHubApi) {
+          request.newBuilder().removeHeader("Authorization").build()
+        } else {
+          request
+        }
+        chain.proceed(safeRequest)
+      }
       .addInterceptor(AndroidDevelopersInterceptor())
       .build()
   }

@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <attr name="bottomSheetHeaderHandlerColor" format="color" />
-  <attr name="bottomSheetHeaderHandlerColorActivated" format="color" />
   <attr name="checkableChipViewStyle" format="reference"/>
-  <attr name="state_raised" format="boolean" />
+  <attr name="settingsPreferenceCardColor" format="color" />
 
   <declare-styleable name="CheckableChipView">
     <attr name="android:checked"/>
@@ -21,13 +19,6 @@
 
     <attr name="ccv_foreground" format="reference"/>
     <attr name="ccv_clearIcon" format="reference"/>
-  </declare-styleable>
-
-  <declare-styleable name="AppsListLoadingView">
-    <attr name="alvSurfaceSrc" format="reference" />
-    <attr name="alvRotationDuration" format="integer" />
-    <attr name="alvHighlightStrength" format="float" />
-    <attr name="alvAxisTilt" format="float" />
   </declare-styleable>
 
   <declare-styleable name="IconCarouselView">

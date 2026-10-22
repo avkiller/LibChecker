@@ -35,7 +35,11 @@ abstract class BaseFragment<VB : ViewBinding> :
     super.onViewCreated(view, savedInstanceState)
     Timber.d("${javaClass.simpleName} ==> onViewCreated")
     init()
-    view.findViewById<View>(android.R.id.list)?.applySystemBarsPadding(bottom = true)
+    view.findViewById<View>(android.R.id.list)?.let { list ->
+      (activity as? IAppBarContainer)?.prepareAppbarContentInset(list)
+      val home = activity as? com.absinthe.libchecker.domain.home.ui.MainActivity
+      if (home != null) home.registerHomeListInsets(list, viewLifecycleOwner) else list.applySystemBarsPadding(bottom = true)
+    }
   }
 
   abstract fun init()

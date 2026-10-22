@@ -1,0 +1,693 @@
+package com.absinthe.libchecker.domain.app.list.ui
+
+import android.content.Context
+import android.content.res.Configuration
+import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuInflater
+import android.view.MenuItem
+import android.view.View
+import android.widget.FrameLayout
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.widget.SearchView
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.doOnNextLayout
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.RecyclerView
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.annotation.STATUS_INIT_END
+import com.absinthe.libchecker.annotation.STATUS_NOT_START
+import com.absinthe.libchecker.annotation.STATUS_START_INIT
+import com.absinthe.libchecker.annotation.STATUS_START_REQUEST_CHANGE
+import com.absinthe.libchecker.constant.Constants
+import com.absinthe.libchecker.constant.OnceTag
+import com.absinthe.libchecker.constant.options.AdvancedOptions
+import com.absinthe.libchecker.database.entity.LCItem
+import com.absinthe.libchecker.databinding.FragmentAppListBinding
+import com.absinthe.libchecker.domain.app.list.GetRandomAppIconUseCase
+import com.absinthe.libchecker.domain.app.list.TRACE_APP_LIST_APPLY_UPDATE_MAIN
+import com.absinthe.libchecker.domain.app.list.TRACE_APP_LIST_REMAINING_ITEM_VIEW_STATES
+import com.absinthe.libchecker.domain.app.list.model.AppListRenderState
+import com.absinthe.libchecker.domain.app.list.traceAppListSection
+import com.absinthe.libchecker.domain.app.list.traceAppListSuspendSection
+import com.absinthe.libchecker.domain.app.list.ui.adapter.AppAdapter
+import com.absinthe.libchecker.domain.app.list.ui.view.AppItemView
+import com.absinthe.libchecker.domain.app.list.usecase.GetAppListPackageStatesUseCase
+import com.absinthe.libchecker.domain.home.presentation.HomeViewModel
+import com.absinthe.libchecker.domain.home.recent.RecentVisit
+import com.absinthe.libchecker.domain.home.ui.INavViewContainer
+import com.absinthe.libchecker.domain.home.ui.MainActivity
+import com.absinthe.libchecker.domain.home.ui.view.RecentVisitItem
+import com.absinthe.libchecker.domain.home.ui.view.installRecentVisitDrag
+import com.absinthe.libchecker.ui.animator.ParticleRemoveItemAnimator
+import com.absinthe.libchecker.ui.animator.positionAtTop
+import com.absinthe.libchecker.ui.base.BaseActivity
+import com.absinthe.libchecker.ui.base.BaseListControllerFragment
+import com.absinthe.libchecker.ui.base.ListScreenChrome
+import com.absinthe.libchecker.ui.base.shouldHandleListSearchQueryChange
+import com.absinthe.libchecker.utils.Telemetry
+import com.absinthe.libchecker.utils.extensions.doOnMainThreadIdle
+import com.absinthe.libchecker.utils.extensions.launchDetailPage
+import com.absinthe.libchecker.utils.extensions.launchDocument
+import com.absinthe.libchecker.utils.extensions.setSpaceFooterView
+import com.absinthe.libchecker.utils.harmony.HarmonyOsUtil
+import com.absinthe.libchecker.utils.showToast
+import com.absinthe.libchecker.view.app.EmptyListView
+import com.absinthe.libraries.utils.utils.AntiShakeUtils
+import jonathanfinerty.once.Once
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import me.zhanghai.android.fastscroll.FastScrollerBuilder
+import org.koin.android.ext.android.inject
+import timber.log.Timber
+
+const val VF_LOADING = 0
+const val VF_LIST = 1
+const val VF_INIT = 2
+const val VF_REJECT = 3
+private const val APP_LIST_UPDATE_DEBOUNCE_MS = 250L
+private const val APP_LIST_FILTER_AND_SORT_OPTIONS =
+  AdvancedOptions.SHOW_SYSTEM_APPS or
+    AdvancedOptions.SHOW_SYSTEM_FRAMEWORK_APPS or
+    AdvancedOptions.SHOW_OVERLAYS or
+    AdvancedOptions.SHOW_64_BIT_APPS or
+    AdvancedOptions.SHOW_32_BIT_APPS or
+    AdvancedOptions.SORT_BY_NAME or
+    AdvancedOptions.SORT_BY_UPDATE_TIME or
+    AdvancedOptions.SORT_BY_TARGET_API
+
+class AppListFragment :
+  BaseListControllerFragment<FragmentAppListBinding>(),
+  SearchView.OnQueryTextListener {
+
+  override fun inflateBinding(inflater: LayoutInflater) = FragmentAppListBinding.inflate(inflater)
+
+  private val isFirstLaunch get() = !Once.beenDone(Once.THIS_APP_INSTALL, OnceTag.FIRST_LAUNCH)
+  private val getRandomAppIcon: GetRandomAppIconUseCase by inject()
+  private val appAdapter = AppAdapter().apply { setHasStableIds(true) }
+  private val particleItemAnimator = ParticleRemoveItemAnimator()
+  private var appListRenderState = AppListRenderState()
+  private var updateItemsJob: Job? = null
+  private var itemViewStatesJob: Job? = null
+  private var itemViewStatesGeneration = 0
+  private var advancedMenuBSDFragment: AdvancedMenuBSDFragment? = null
+  private var isFirstRequestChange = true
+  private var isSearchTextClearOnce = false
+  private var hasInitializedItems = false
+  private var suppressImeOnNextSearchRestore = false
+  private var pendingDumpAppsInfoAction: HomeViewModel.AppListSearchCommandAction.DumpAppsInfo? = null
+
+  private var resetScrollbarNavigationReveal: (() -> Unit)? = null
+  private lateinit var dumpAppsInfoResultLauncher: ActivityResultLauncher<String>
+  private lateinit var queryAllPackagesPermissionLauncher: ActivityResultLauncher<String>
+
+  override fun init() {
+    val context = (context as? BaseActivity<*>) ?: return
+    homeViewModel.onAppListViewCreated()
+    appAdapter.also {
+      it.setOnItemClickListener { _, view, position ->
+        if (AntiShakeUtils.isInvalidClick(view)) {
+          return@setOnItemClickListener
+        }
+        suppressImeOnNextSearchRestore = menu?.findItem(R.id.search)?.isActionViewExpanded == true
+        activity?.launchDetailPage(it.getItem(position))
+      }
+      it.stateView =
+        EmptyListView(context).apply {
+          layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+          )
+        }
+      it.isStateViewEnable = true
+    }
+
+    binding.apply {
+      list.apply {
+        adapter = appAdapter
+        installRecentVisitDrag(this) { row, position, touch ->
+          val item = appAdapter.data.getOrNull(position) ?: return@installRecentVisitDrag false
+          val icon = (row as? AppItemView)?.container?.icon?.drawable ?: return@installRecentVisitDrag false
+          (activity as? MainActivity)?.pinListItem(row, touch, RecentVisitItem(RecentVisit(item.packageName), item.label, icon, item)) == true
+        }
+        itemAnimator = particleItemAnimator
+        wireListScreenChrome(this)
+        layoutManager = createListScreenLayoutManager(resources.configuration)
+        setHasFixedSize(true)
+        FastScrollerBuilder(this).useMd2Style().build()
+        resetScrollbarNavigationReveal =
+          ListScreenChrome.installScrollbarNavigationReveal(
+            recyclerView = this,
+            coroutineScope = viewLifecycleOwner.lifecycleScope,
+            isFragmentVisible = ::isFragmentVisible,
+            isSearchTextClearOnce = { isSearchTextClearOnce },
+            clearSearchTextFlag = { isSearchTextClearOnce = false },
+            revealNavigation = { (activity as? INavViewContainer)?.showNavigationView() },
+            onScrollbarScrolled = homeViewModel::onAppListUserScrolled
+          )
+        addOnScrollListener(object : RecyclerView.OnScrollListener() {
+          override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+            if (newState == RecyclerView.SCROLL_STATE_DRAGGING) {
+              homeViewModel.onAppListUserScrolled()
+            }
+          }
+        })
+      }
+      vfContainer.apply {
+        setInAnimation(activity, R.anim.anim_fade_in)
+        setOutAnimation(activity, R.anim.anim_fade_out)
+        setOnDisplayedChildChangedListener {
+          appAdapter.setSpaceFooterView()
+        }
+      }
+      rejectView.setOnClickListener {
+        try {
+          if (::queryAllPackagesPermissionLauncher.isInitialized && vfContainer.displayedChild == VF_REJECT) {
+            queryAllPackagesPermissionLauncher.launch(Constants.GET_INSTALLED_APPS)
+          }
+        } catch (e: Exception) {
+          Timber.e(e)
+        }
+      }
+      initView.setProgress(0, false)
+      initView.loadingView.setAppIconHighlightProvider { getRandomAppIcon() }
+    }
+
+    initObserver()
+  }
+
+  override fun onAttach(context: Context) {
+    super.onAttach(context)
+    dumpAppsInfoResultLauncher =
+      registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) {
+        val action = pendingDumpAppsInfoAction
+        pendingDumpAppsInfoAction = null
+        if (it != null && action != null) {
+          homeViewModel.dumpAppsInfo(
+            uri = it,
+            format = action.format
+          )
+        }
+      }
+    queryAllPackagesPermissionLauncher =
+      registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        if (homeViewModel.onPackagesPermissionResult(isGranted) && isAdded) {
+          initApps()
+        }
+      }
+  }
+
+  override fun onResume() {
+    super.onResume()
+    if (homeViewModel.appListStatus == STATUS_START_INIT) {
+      flip(VF_INIT)
+      removeMenuProviderPreservingSearch()
+    }
+  }
+
+  override fun onDestroyView() {
+    binding.list.adapter = null
+    super.onDestroyView()
+  }
+
+  override fun onPause() {
+    super.onPause()
+    advancedMenuBSDFragment?.dismiss()
+    advancedMenuBSDFragment = null
+  }
+
+  override fun onConfigurationChanged(newConfig: Configuration) {
+    super.onConfigurationChanged(newConfig)
+    binding.list.layoutManager = createListScreenLayoutManager(newConfig)
+  }
+
+  override fun onQueryTextSubmit(query: String?): Boolean {
+    return false
+  }
+
+  override fun onQueryTextChange(newText: String): Boolean {
+    if (!shouldHandleListSearchQueryChange(viewLifecycleOwnerLiveData.value?.lifecycle?.currentState)) {
+      return false
+    }
+    val shouldReturnTopAfterUpdate = shouldReturnAppListTopAfterSearch(
+      previousQuery = appListRenderState.highlightText,
+      newQuery = newText
+    )
+    val shouldSyncHighlight = appListRenderState.highlightText != newText
+    val searchChange = homeViewModel.onAppListSearchQueryChanged(newText)
+    if (searchChange.shouldRefreshItems || shouldSyncHighlight) {
+      isSearchTextClearOnce = newText.isEmpty()
+      bindAppListRenderState(appListRenderState.copy(highlightText = newText))
+      updateItems(
+        highlightRefresh = true,
+        shouldReturnTopAfterUpdate = shouldReturnTopAfterUpdate
+      )
+
+      when (val action = searchChange.action) {
+        HomeViewModel.AppListSearchCommandAction.None -> Unit
+
+        HomeViewModel.AppListSearchCommandAction.EasterEgg -> {
+          context?.showToast("🥚")
+          Telemetry.recordEvent(
+            Constants.Event.EASTER_EGG,
+            mapOf("EASTER_EGG" to "AppList Search")
+          )
+        }
+
+        HomeViewModel.AppListSearchCommandAction.DebugModeEnabled -> {
+          context?.showToast("DEBUG MODE")
+        }
+
+        HomeViewModel.AppListSearchCommandAction.UserModeEnabled -> {
+          context?.showToast("USER MODE")
+        }
+
+        is HomeViewModel.AppListSearchCommandAction.DumpAppsInfo -> {
+          pendingDumpAppsInfoAction = action
+          runCatching {
+            if (!dumpAppsInfoResultLauncher.launchDocument(requireContext(), action.fileName)) {
+              pendingDumpAppsInfoAction = null
+            }
+          }.onFailure {
+            pendingDumpAppsInfoAction = null
+            Timber.e(it)
+            context?.showToast("Document API not working")
+          }
+        }
+      }
+    }
+    return false
+  }
+
+  override fun onCreateMenu(menu: Menu, menuInflater: MenuInflater) {
+    menuInflater.inflate(R.menu.app_list_menu, menu)
+    this.menu = menu
+
+    val context = context ?: return
+    ListScreenChrome.installSearchMenuItem(
+      menuItem = menu.findItem(R.id.search),
+      context = context,
+      queryHint = getText(R.string.search_hint),
+      retainedQuery = homeViewModel.getAppListSearchQuery(),
+      toolbarState = homeViewModel.getToolbarSearchMenuState(),
+      listener = this,
+      isListReady = isListReady,
+      onExpanded = { searchView ->
+        if (shouldSuppressImeAfterSearchRestore(suppressImeOnNextSearchRestore, true)) {
+          suppressImeAfterSearchRestore(searchView)
+        }
+      }
+    )
+    suppressImeOnNextSearchRestore = false
+  }
+
+  private fun suppressImeAfterSearchRestore(searchView: SearchView) {
+    searchView.clearFocus()
+    searchView.post {
+      if (!isAdded) {
+        return@post
+      }
+      searchView.clearFocus()
+      val activityWindow = requireActivity().window
+      WindowInsetsControllerCompat(activityWindow, activityWindow.decorView)
+        .hide(WindowInsetsCompat.Type.ime())
+    }
+  }
+
+  override fun onMenuItemSelected(menuItem: MenuItem): Boolean {
+    when (menuItem.itemId) {
+      R.id.advanced -> {
+        activity?.let {
+          advancedMenuBSDFragment?.dismiss()
+          advancedMenuBSDFragment = AdvancedMenuBSDFragment().apply {
+            val menuState = homeViewModel.getAppListAdvancedMenuState()
+            setOptionChangeListener(
+              displayOptions = menuState.displayOptions,
+              onDisplayOptionsChanged = homeViewModel::setAppListDisplayOptions
+            )
+            setOnDismissListener { advancedDiff ->
+              val shouldReturnTopAfterUpdate =
+                shouldReturnAppListTopAfterAdvancedMenuChange(advancedDiff)
+              val dismissPlan = homeViewModel.onAppListAdvancedMenuDismissed(
+                displayOptionsDiff = advancedDiff,
+                itemDisplayOptionsDiff = 0
+              )
+              if (dismissPlan.shouldRefreshItems) {
+                updateItems(shouldReturnTopAfterUpdate = shouldReturnTopAfterUpdate)
+              }
+              advancedMenuBSDFragment = null
+            }
+          }.also { bsd ->
+            bsd.show(
+              it.supportFragmentManager,
+              AdvancedMenuBSDFragment::class.java.name
+            )
+          }
+        }
+      }
+    }
+    return true
+  }
+
+  override fun onVisibilityChanged(visible: Boolean) {
+    super.onVisibilityChanged(visible)
+    onListScreenVisibilityChanged(visible, binding.list)
+    if (visible) {
+      appAdapter.setSpaceFooterView()
+    } else {
+      resetScrollbarNavigationReveal?.invoke()
+    }
+  }
+
+  override fun getSuitableLayoutManager() = binding.list.layoutManager
+
+  override fun onReturnTop() {
+    if (!animateReturnTop(binding.list)) {
+      if (!isListReady || appAdapter.data.isEmpty()) {
+        flip(VF_LOADING)
+      }
+      if (isFirstLaunch) {
+        initApps()
+      } else {
+        homeViewModel.requestChange(showLoadingFeedback = true)
+      }
+    }
+  }
+
+  private fun initObserver() {
+    val viewScope = viewLifecycleOwner.lifecycleScope
+    homeViewModel.apply {
+      effect.onEach {
+        when (it) {
+          HomeViewModel.Effect.PackageListLoadFailed -> {
+            flip(VF_LIST)
+            context?.showToast(R.string.package_list_load_failed)
+          }
+
+          is HomeViewModel.Effect.ReloadApps -> {
+            Once.clearDone(OnceTag.FIRST_LAUNCH)
+            doOnMainThreadIdle {
+              viewScope.launch { initApps() }
+            }
+          }
+
+          is HomeViewModel.Effect.UpdateInitProgress -> {
+            binding.initView.setProgress(it.progress, true)
+          }
+
+          is HomeViewModel.Effect.PackageChanged -> {
+            homeViewModel.requestChange(it.packageChangeState)
+          }
+
+          is HomeViewModel.Effect.UpdateAppListStatus -> {
+            Timber.d("AppList status updates to ${it.status}")
+            when (it.status) {
+              STATUS_START_INIT -> {
+                isListReady = false
+                flip(VF_INIT)
+              }
+
+              STATUS_INIT_END -> {
+                if (isFirstLaunch) {
+                  if (homeViewModel.isOnlySelfAppInDatabase()) {
+                    Timber.d("Only the app itself")
+                    flip(VF_REJECT)
+                  } else {
+                    Once.markDone(OnceTag.FIRST_LAUNCH)
+                    Once.markDone(OnceTag.SHOULD_RELOAD_APP_LIST)
+                  }
+                }
+                removeMenuProviderPreservingSearch()
+                activity?.addMenuProvider(this@AppListFragment, viewLifecycleOwner, Lifecycle.State.RESUMED)
+              }
+
+              STATUS_NOT_START -> {
+                val first = HarmonyOsUtil.isHarmonyOs() &&
+                  !Once.beenDone(Once.THIS_APP_INSTALL, OnceTag.HARMONY_FIRST_INIT)
+                val second = !isFirstLaunch &&
+                  !Once.beenDone(Once.THIS_APP_INSTALL, OnceTag.SHOULD_RELOAD_APP_LIST)
+                if (first || second) {
+                  initApps()
+                  Once.markDone(OnceTag.SHOULD_RELOAD_APP_LIST)
+                  Once.markDone(OnceTag.HARMONY_FIRST_INIT)
+                }
+              }
+            }
+          }
+
+          is HomeViewModel.Effect.RefreshList -> {
+            updateItems()
+          }
+        }
+      }.launchIn(viewScope)
+      displayItemsFlow.onEach {
+        if (it.isEmpty() || (isFirstLaunch && !hasInitializedItems)) {
+          initApps()
+        } else if (
+          appListStatus != STATUS_START_INIT &&
+          appListStatus != STATUS_START_REQUEST_CHANGE
+        ) {
+          updateItems()
+          if (isFirstRequestChange) {
+            isFirstRequestChange = false
+            homeViewModel.requestChange()
+          }
+        }
+      }.launchIn(viewScope)
+    }
+
+    homeViewModel.appListDisplayOptionsChanges.onEach {
+      if (isListReady) {
+        updateItems()
+      }
+    }.launchIn(viewScope)
+  }
+
+  private fun removeMenuProviderPreservingSearch() {
+    (menu?.findItem(R.id.search)?.actionView as? SearchView)?.setOnQueryTextListener(null)
+    activity?.removeMenuProvider(this)
+  }
+
+  private fun updateItems(
+    highlightRefresh: Boolean = false,
+    shouldReturnTopAfterUpdate: Boolean = false
+  ) {
+    val generation = ++itemViewStatesGeneration
+    val shouldDebounce = highlightRefresh || isListReady || appAdapter.data.isNotEmpty()
+    itemViewStatesJob?.cancel()
+    updateItemsJob?.cancel()
+    updateItemsJob = updateItemsImpl(
+      highlightRefresh = highlightRefresh,
+      shouldReturnTopAfterUpdate = shouldReturnTopAfterUpdate,
+      generation = generation,
+      shouldDebounce = shouldDebounce
+    )
+  }
+
+  private fun updateItemsImpl(
+    highlightRefresh: Boolean = false,
+    shouldReturnTopAfterUpdate: Boolean = false,
+    generation: Int,
+    shouldDebounce: Boolean
+  ) = lifecycleScope.launch(Dispatchers.IO) {
+    if (shouldDebounce) {
+      delay(APP_LIST_UPDATE_DEBOUNCE_MS)
+    }
+    Timber.d("updateItemsImpl")
+    val currentItems = withContext(Dispatchers.Main) {
+      appAdapter.data.toList()
+    }
+    val update = homeViewModel.buildAppListUpdate(
+      isCurrentProcess64Bit = android.os.Process.is64Bit(),
+      currentItems = currentItems,
+      highlightRefresh = highlightRefresh
+    )
+    val updatePlan = when (update) {
+      HomeViewModel.AppListUpdate.OnlySelf -> {
+        Timber.d("updateItemsImpl: only the app itself")
+        if (homeViewModel.appListStatus == STATUS_NOT_START) {
+          Once.clearDone(OnceTag.FIRST_LAUNCH)
+          flip(VF_REJECT)
+        }
+        return@launch
+      }
+
+      is HomeViewModel.AppListUpdate.Content -> update.plan
+    }
+
+    if (!isActive) {
+      return@launch
+    }
+    withContext(Dispatchers.Main) {
+      if (generation != itemViewStatesGeneration) {
+        return@withContext
+      }
+      traceAppListSection(TRACE_APP_LIST_APPLY_UPDATE_MAIN) {
+        appAdapter.apply {
+          particleItemAnimator.prepareParticleRemovals(updatePlan.particleRemovalItemIds)
+          bindAppListRenderState(updatePlan.content.renderState)
+          homeViewModel.onAppListUpdatePlanApplied(updatePlan)
+
+          setDiffNewData(updatePlan.content.items.toMutableList()) {
+            if (isDetached || !isBindingInitialized()) {
+              return@setDiffNewData
+            }
+            flip(VF_LIST)
+            isListReady = true
+            onSearchResultsApplied(updatePlan.content.renderState.highlightText, updatePlan.content.items.isEmpty())
+            val initialItemViewStateCount = updatePlan.content.renderState.itemViewStates.size
+            val notifyRangeCount = if (currentItems.isEmpty()) {
+              0
+            } else {
+              initialItemViewStateCount.coerceAtMost(data.size)
+            }
+            val deferRangeRefresh = binding.list.hasPendingAdapterUpdates()
+            if (!deferRangeRefresh) {
+              if (notifyRangeCount > 0) {
+                notifyItemRangeChanged(0, notifyRangeCount)
+              }
+              if (highlightRefresh) {
+                notifyHighlightTextChanged()
+              }
+            }
+            binding.list.doOnNextLayout {
+              if (deferRangeRefresh) {
+                if (notifyRangeCount > 0) {
+                  notifyItemRangeChanged(0, notifyRangeCount)
+                }
+                if (highlightRefresh) {
+                  notifyHighlightTextChanged()
+                }
+              }
+              updateRemainingItemViewStates(
+                items = updatePlan.content.items,
+                initialItemViewStateCount = initialItemViewStateCount,
+                packageStateSnapshot = updatePlan.content.packageStateSnapshot,
+                updateGeneration = generation
+              )
+            }
+
+            setSpaceFooterView()
+            if (shouldReturnTopAfterUpdate || updatePlan.shouldReturnTopAfterRequestChange) {
+              returnTopOfList()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private fun updateRemainingItemViewStates(
+    items: List<LCItem>,
+    initialItemViewStateCount: Int,
+    packageStateSnapshot: GetAppListPackageStatesUseCase.PackageStateSnapshot,
+    updateGeneration: Int
+  ) {
+    if (updateGeneration != itemViewStatesGeneration) {
+      return
+    }
+    itemViewStatesGeneration++
+    itemViewStatesJob?.cancel()
+    if (items.isEmpty() || initialItemViewStateCount >= items.size) {
+      return
+    }
+
+    val generation = itemViewStatesGeneration
+    val remainingItems = items.subList(initialItemViewStateCount, items.size)
+    itemViewStatesJob = viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+      val itemViewStates = traceAppListSuspendSection(TRACE_APP_LIST_REMAINING_ITEM_VIEW_STATES) {
+        homeViewModel.buildAppListItemViewStates(remainingItems, packageStateSnapshot)
+      }
+      if (!isActive) {
+        return@launch
+      }
+      withContext(Dispatchers.Main) {
+        if (
+          generation != itemViewStatesGeneration ||
+          isDetached ||
+          !isBindingInitialized() ||
+          !hasSameAppList(items)
+        ) {
+          return@withContext
+        }
+        bindAppListRenderState(appListRenderState.mergeItemViewStates(itemViewStates))
+        val changedStart = initialItemViewStateCount.coerceAtMost(appAdapter.data.size)
+        if (changedStart < appAdapter.data.size) {
+          appAdapter.notifyItemRangeChanged(changedStart, appAdapter.data.size - changedStart)
+        }
+      }
+    }
+  }
+
+  private fun hasSameAppList(items: List<LCItem>): Boolean {
+    return appAdapter.data.size == items.size &&
+      items.indices.all { index -> appAdapter.data[index].packageName == items[index].packageName }
+  }
+
+  private fun bindAppListRenderState(state: AppListRenderState) {
+    appListRenderState = state
+    appAdapter.bind(state)
+  }
+
+  private fun returnTopOfList() {
+    cancelReturnTopAnimation()
+    binding.list.apply {
+      post {
+        positionAtTop()
+      }
+    }
+  }
+
+  private fun flip(page: Int) = viewLifecycleOwnerLiveData.value?.lifecycleScope?.launch(Dispatchers.Main) {
+    allowRefreshing = page == VF_LIST
+    homeViewModel.setPackagesPermissionCheckPending(page == VF_REJECT)
+    if (page == VF_LOADING && binding.loadingViewStub.parent != null) {
+      binding.loadingViewStub.inflate()
+    }
+    if (binding.vfContainer.displayedChild != page) {
+      Timber.d("flip to $page")
+      binding.vfContainer.displayedChild = page
+    }
+    if (page == VF_INIT) {
+      menu?.findItem(R.id.search)?.isVisible = false
+    } else {
+      menu?.findItem(R.id.search)?.isVisible = true
+    }
+  }
+
+  private fun initApps() {
+    hasInitializedItems = true
+    flip(VF_INIT)
+    activity?.let {
+      removeMenuProviderPreservingSearch()
+      homeViewModel.initItems()
+    }
+  }
+}
+
+internal fun shouldSuppressImeAfterSearchRestore(
+  suppressImeOnNextSearchRestore: Boolean,
+  shouldExpand: Boolean
+): Boolean {
+  return suppressImeOnNextSearchRestore && shouldExpand
+}
+
+internal fun shouldReturnAppListTopAfterSearch(
+  previousQuery: String,
+  newQuery: String
+): Boolean {
+  return previousQuery != newQuery
+}
+
+internal fun shouldReturnAppListTopAfterAdvancedMenuChange(displayOptionsDiff: Int): Boolean {
+  return displayOptionsDiff and APP_LIST_FILTER_AND_SORT_OPTIONS != 0
+}

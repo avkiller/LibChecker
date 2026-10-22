@@ -6,26 +6,39 @@ plugins {
   alias(libs.plugins.protobuf)
   alias(libs.plugins.hiddenApiRefine)
   alias(libs.plugins.ksp)
+  alias(libs.plugins.androidX.room3)
   alias(libs.plugins.moshiX)
   alias(libs.plugins.aboutlibraries)
   alias(libs.plugins.gms)
   alias(libs.plugins.firebase.crashlytics)
   id("build-logic")
   id("res-opt")
+  id("market-stable-manifest")
+}
+
+val rulesBundleTestData = configurations.create("rulesBundleTestData") {
+  isCanBeConsumed = false
+  isTransitive = false
+}
+tasks.withType<Test>().configureEach {
+  val archive = files(rulesBundleTestData)
+  inputs.files(archive)
+  doFirst { systemProperty("rulesBundleAar", archive.singleFile.absolutePath) }
 }
 
 ksp {
   arg("moshi.generated", "javax.annotation.Generated")
-  arg("room.generateKotlin", "true")
-  arg("room.incremental", "true")
-  arg("room.schemaLocation", "$projectDir/schemas")
-  arg("room.expandProjection", "true")
+}
+
+room3 {
+  schemaDirectory("$projectDir/schemas")
 }
 
 setupAppModule {
   namespace = "com.absinthe.libchecker"
   defaultConfig {
     applicationId = "com.fireworld.libchecker"
+    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
   buildFeatures {
@@ -43,11 +56,22 @@ setupAppModule {
     release {
       optimization {
         enable = true
+        // Scope broad consumer rules locally; exact versions restore upstream rules on upgrade.
         keepRules {
-          // https://github.com/AppDevNext/AndroidChart/blob/master/chartLib/proguard-lib.pro
-          ignoreFrom(libs.mpAndroidChart.get().module.toString())
+          includeDefault = false
+          ignoreFrom("androidx.annotation:annotation-jvm:1.11.0")
+          ignoreFrom("androidx.coordinatorlayout:coordinatorlayout:1.3.0")
+          ignoreFrom("androidx.recyclerview:recyclerview:1.4.0")
+          ignoreFrom("com.google.android.material:material:1.14.0")
         }
       }
+    }
+    create("benchmark") {
+      initWith(getByName("release"))
+      applicationIdSuffix = ".debug"
+      matchingFallbacks += listOf("release")
+      proguardFiles("src/benchmark/keepRules/proguard-rules.keep")
+      signingConfig = signingConfigs.getByName("debug")
     }
   }
 
@@ -57,14 +81,19 @@ setupAppModule {
     create("foss") {
       isDefault = true
       dimension = flavorDimensions[0]
+      buildConfigField("Boolean", "IS_FOSS", "true")
       configure<CrashlyticsExtension> {
         mappingFileUploadEnabled = false
       }
     }
     create("market") {
       dimension = flavorDimensions[0]
+      optimization {
+        keepRules { ignoreFrom("com.google.android.gms:play-services-basement:18.12.0") }
+      }
+      buildConfigField("Boolean", "IS_FOSS", "false")
     }
-    all {
+    configureEach {
       manifestPlaceholders["channel"] = this.name
     }
   }
@@ -105,16 +134,13 @@ androidComponents {
   }
 }
 
-configurations.configureEach {
-  exclude("org.jetbrains.kotlin", "kotlin-stdlib-jdk7")
-  exclude("org.jetbrains.kotlin", "kotlin-stdlib-jdk8")
-}
-
 dependencies {
-  compileOnly(projects.hiddenApi)
+  compileOnly(dependencies.project(":hidden-api"))
 
+  implementation(projects.compat)
   implementation(libs.kotlinX.coroutines)
-  // implementation(libs.androidX.appCompat)
+  implementation(platform(libs.koin.bom))
+  implementation(libs.koin.android)
   implementation(libs.androidX.core)
   implementation(libs.androidX.activity)
   implementation(libs.androidX.fragment)
@@ -124,11 +150,11 @@ dependencies {
   implementation(libs.androidX.recyclerView)
   implementation(libs.androidX.preference)
   implementation(libs.androidX.window)
-  implementation(libs.androidX.security)
   implementation(libs.bundles.androidX.lifecycle)
-  implementation(libs.bundles.androidX.room)
+  implementation(libs.bundles.androidX.room3)
   implementation(libs.google.material)
   implementation(libs.coil)
+  implementation(libs.coil.svg)
   implementation(libs.square.okHttp)
   implementation(libs.square.okio)
   implementation(libs.square.retrofit)
@@ -139,9 +165,13 @@ dependencies {
   implementation(libs.rikka.refine.runtime)
   implementation(libs.bundles.zhaobozhen)
   implementation(libs.lc.rules)
-  // implementation(files("libs/library-release.aar"))
+  add(rulesBundleTestData.name, libs.lc.rules)
+  ksp(libs.androidX.room3.compiler)
 
-  ksp(libs.androidX.room.compiler)
+  testImplementation(libs.junit)
+
+  androidTestImplementation(libs.androidX.test.ext.junit)
+  androidTestImplementation(libs.androidX.test.runner)
 
   implementation(libs.aboutlibraries.core)
   implementation(libs.aboutlibraries.ui)
@@ -161,11 +191,16 @@ dependencies {
 
   implementation(libs.bundles.shizuku)
 
-  debugImplementation(libs.square.leakCanary)
   "marketCompileOnly"(fileTree("ohos"))
   "marketImplementation"(platform(libs.firebase.bom))
   "marketImplementation"(libs.bundles.firebase) {
     exclude(group = "com.google.android.gms", module = "play-services-ads-identifier")
+  }
+}
+
+aboutLibraries {
+  collect {
+    configPath = file("aboutlibraries")
   }
 }
 
@@ -182,8 +217,8 @@ protobuf {
   }
   plugins {
     generateProtoTasks {
-      all().forEach {
-        it.builtins {
+      all().configureEach {
+        builtins {
           create("java") {
             option("lite")
           }

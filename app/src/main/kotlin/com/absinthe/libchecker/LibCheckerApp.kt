@@ -3,16 +3,30 @@ package com.absinthe.libchecker
 import android.app.Application
 import android.content.Context
 import android.content.pm.PackageParser
-import android.os.StrictMode
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
 import androidx.window.embedding.RuleController
 import androidx.window.embedding.SplitController
 import coil.Coil
 import coil.ImageLoader
+import coil.decode.SvgDecoder
 import com.absinthe.libchecker.app.MainLooperFilter
 import com.absinthe.libchecker.constant.GlobalValues
 import com.absinthe.libchecker.database.RulesRepository
+import com.absinthe.libchecker.di.appDetailModule
+import com.absinthe.libchecker.di.appListModule
+import com.absinthe.libchecker.di.appModule
+import com.absinthe.libchecker.di.rulesModule
+import com.absinthe.libchecker.di.settingsModule
+import com.absinthe.libchecker.di.snapshotBackupModule
+import com.absinthe.libchecker.di.snapshotComparisonModule
+import com.absinthe.libchecker.di.snapshotCoreModule
+import com.absinthe.libchecker.di.snapshotDisplayModule
+import com.absinthe.libchecker.di.snapshotListModule
+import com.absinthe.libchecker.di.snapshotTimeNodeModule
+import com.absinthe.libchecker.di.snapshotTrackModule
+import com.absinthe.libchecker.di.statisticsChartModule
+import com.absinthe.libchecker.di.statisticsReferenceModule
 import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.Telemetry
 import com.absinthe.libchecker.utils.UiUtils
@@ -30,6 +44,9 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
 import me.zhanghai.android.appiconloader.coil.AppIconFetcher
 import me.zhanghai.android.appiconloader.coil.AppIconKeyer
+import org.koin.android.ext.koin.androidContext
+import org.koin.android.ext.koin.androidLogger
+import org.koin.core.context.startKoin
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 import timber.log.Timber
 
@@ -54,8 +71,28 @@ class LibCheckerApp : Application() {
       Timber.plant(ReleaseTree())
     }
     Timber.plant(FileLoggingTree(this))
+    startKoin {
+      androidLogger()
+      androidContext(this@LibCheckerApp)
+      modules(
+        appModule,
+        appDetailModule,
+        appListModule,
+        rulesModule,
+        snapshotCoreModule,
+        snapshotComparisonModule,
+        snapshotBackupModule,
+        snapshotDisplayModule,
+        snapshotListModule,
+        snapshotTimeNodeModule,
+        snapshotTrackModule,
+        statisticsChartModule,
+        statisticsReferenceModule,
+        settingsModule
+      )
+    }
     Telemetry.setEnable(GlobalValues.isAnonymousAnalyticsEnabled)
-    RulesRepository.init(this)
+    appScope.launch(Dispatchers.IO) { RulesRepository.init(this@LibCheckerApp) }
     Utility.init(this)
     if (OsUtils.atLeastT()) {
       AppCompatDelegate.setApplicationLocales(LocaleListCompat.create(GlobalValues.locale))
@@ -67,7 +104,9 @@ class LibCheckerApp : Application() {
 
     Coil.setImageLoader {
       ImageLoader.Builder(this)
+        .crossfade(true)
         .components {
+          add(SvgDecoder.Factory())
           add(AppIconKeyer())
           add(AppIconFetcher.Factory(40.dp, false, this@LibCheckerApp))
         }
@@ -117,20 +156,11 @@ class LibCheckerApp : Application() {
     }.onFailure {
       Timber.w("bypass [PackageParser check] failed")
     }
-
-    runCatching {
-      StrictMode::class.java.getDeclaredMethod("disableDeathOnFileUriExposure").invoke(null)
-      Timber.i("StrictMode: disableDeathOnFileUriExposure")
-    }.onFailure {
-      Timber.w("bypass [StrictMode: disableDeathOnFileUriExposure] failed")
-    }
   }
 
   private fun clearCache() {
-    val sharedApkDir = File(cacheDir, "shared_apk")
-    if (sharedApkDir.exists() && sharedApkDir.isDirectory) {
-      sharedApkDir.deleteRecursively()
-    }
+    File(cacheDir, "shared_apk").takeIf { it.isDirectory }?.deleteRecursively()
+    File(cacheDir, "shared_snapshot_reports").takeIf { it.isDirectory }?.deleteRecursively()
   }
 
   companion object {

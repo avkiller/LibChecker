@@ -1,15 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+<com.absinthe.libchecker.ui.preference.view.PreferenceItemView xmlns:android="http://schemas.android.com/apk/res/android"
   xmlns:app="http://schemas.android.com/apk/res-auto"
   android:layout_width="match_parent"
   android:layout_height="wrap_content"
   android:layout_marginTop="@dimen/settings_preference_card_spacing"
   android:layout_marginBottom="@dimen/settings_preference_card_spacing"
-  android:foreground="?attr/selectableItemBackground"
-  app:cardBackgroundColor="?attr/colorSurfaceContainerHigh"
-  app:cardCornerRadius="@dimen/settings_preference_inner_corner_radius"
-  app:cardElevation="0dp"
-  app:strokeWidth="0dp">
+  android:foreground="?attr/selectableItemBackground">
 
   <LinearLayout
     android:layout_width="match_parent"
@@ -18,16 +14,16 @@
     android:gravity="center_vertical"
     android:minHeight="@dimen/settings_preference_min_height"
     android:orientation="horizontal"
-    android:paddingStart="24dp"
+    android:paddingStart="@dimen/normal_padding"
     android:paddingTop="10dp"
-    android:paddingEnd="16dp"
+    android:paddingEnd="@dimen/normal_padding"
     android:paddingBottom="10dp">
 
     <FrameLayout
       android:id="@+id/icon_frame"
       android:layout_width="@dimen/settings_preference_icon_container_size"
       android:layout_height="@dimen/settings_preference_icon_container_size"
-      android:layout_marginEnd="18dp">
+      android:layout_marginEnd="8dp">
 
       <ImageView
         android:id="@android:id/icon"
@@ -65,8 +61,6 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="2dp"
-        android:ellipsize="end"
-        android:maxLines="3"
         android:textAppearance="?attr/textAppearanceBodyMedium"
         android:textColor="?attr/colorOnSurfaceVariant"
         android:visibility="gone" />
@@ -90,4 +84,10 @@
       android:src="@drawable/ic_chevron_right"
       app:tint="?attr/colorOnSurface" />
   </LinearLayout>
-</com.google.android.material.card.MaterialCardView>
+
+  <ViewStub
+    android:id="@+id/settings_preference_inline_stub"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout="@layout/preference_inline_control" />
+</com.absinthe.libchecker.ui.preference.view.PreferenceItemView>

@@ -1,6 +1,5 @@
 package com.absinthe.libchecker.constant
 
-import android.content.SharedPreferences
 import androidx.core.content.edit
 import com.absinthe.libchecker.BuildConfig
 import com.absinthe.libchecker.LibCheckerApp
@@ -9,16 +8,17 @@ import com.absinthe.libchecker.app.SystemServices
 import com.absinthe.libchecker.constant.options.AdvancedOptions
 import com.absinthe.libchecker.constant.options.LibReferenceOptions
 import com.absinthe.libchecker.constant.options.SnapshotOptions
-import com.absinthe.libchecker.features.applist.MODE_SORT_BY_SIZE
-import com.absinthe.libchecker.utils.DateUtils
+import com.absinthe.libchecker.domain.app.detail.ui.MODE_SORT_BY_SIZE
+import com.absinthe.libchecker.utils.GitHubTokenStore
 import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.PackageUtils
 import com.absinthe.libchecker.utils.SPDelegates
 import com.absinthe.libchecker.utils.SPUtils
-import com.absinthe.libchecker.utils.extensions.unsafeLazy
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import timber.log.Timber
 
 const val SP_NAME = "${BuildConfig.APPLICATION_ID}_preferences"
@@ -32,16 +32,14 @@ object GlobalValues {
     return (uuid.hashCode() + PackageUtils.getPackageInfo(app.packageName).firstInstallTime).mod(90000) + 10000
   }
 
-  private fun getPreferences(): SharedPreferences {
-    return SPUtils.sp
-  }
-
   val preferencesFlow = MutableSharedFlow<Pair<String, Any>>()
 
   var advancedOptions: Int by SPDelegates(Constants.PREF_ADVANCED_OPTIONS, AdvancedOptions.DEFAULT_OPTIONS)
 
   var itemAdvancedOptions: Int by SPDelegates(Constants.PREF_ITEM_ADVANCED_OPTIONS, AdvancedOptions.ITEM_DEFAULT_OPTIONS)
 
+  var libReferencePinchHintShown: Boolean by SPDelegates(Constants.PREF_LIB_REF_PINCH_HINT_SHOWN, false)
+  var libReferenceTreemap: Boolean by SPDelegates(Constants.PREF_LIB_REF_TREEMAP, false)
   var libReferenceOptions: Int by SPDelegates(Constants.PREF_LIB_REF_OPTIONS, LibReferenceOptions.DEFAULT_OPTIONS)
 
   var snapshotOptions: Int by SPDelegates(Constants.PREF_SNAPSHOT_OPTIONS, SnapshotOptions.DEFAULT_OPTIONS)
@@ -58,6 +56,8 @@ object GlobalValues {
 
   var darkMode: String by SPDelegates(Constants.PREF_DARK_MODE, Constants.DARK_MODE_FOLLOW_SYSTEM)
 
+  var isAmoledTheme: Boolean by SPDelegates(Constants.PREF_AMOLED_THEME, false)
+
   var libSortMode: Int by SPDelegates(Constants.PREF_LIB_SORT_MODE, MODE_SORT_BY_SIZE)
 
   var processMode: Boolean by SPDelegates(Constants.PREF_PROCESS_MODE, false)
@@ -73,23 +73,81 @@ object GlobalValues {
 
   var isDetailedAbiChart: Boolean by SPDelegates(Constants.PREF_DETAILED_ABI_CHART, false)
 
-  var preferredRuleLanguage: String by SPDelegates(Constants.PREF_RULE_LANGUAGE, "zh-Hans")
+  private var storedRuleLanguage: String by SPDelegates(Constants.PREF_RULE_LANGUAGE, "en")
+  private val ruleLanguageState by lazy { MutableStateFlow(storedRuleLanguage) }
+  val ruleLanguage get() = ruleLanguageState.asStateFlow()
 
-  val season by unsafeLazy { DateUtils.getCurrentSeason() }
+  var preferredRuleLanguage: String
+    get() = storedRuleLanguage
+    set(value) {
+      storedRuleLanguage = value
+      ruleLanguageState.value = value
+    }
+
+  var githubApiTokenVersion: Int by SPDelegates(Constants.PREF_GITHUB_API_TOKEN_VERSION, 0)
+
+  var githubApiToken: String
+    get() {
+      val token = GitHubTokenStore.get()
+      if (token.isNotEmpty()) {
+        return token
+      }
+
+      val legacyToken = SPUtils.sp
+        .getString(Constants.PREF_GITHUB_API_TOKEN, null)
+        ?.trim()
+        .orEmpty()
+      if (legacyToken.isNotEmpty()) {
+        if (GitHubTokenStore.set(legacyToken)) {
+          SPUtils.sp.edit { remove(Constants.PREF_GITHUB_API_TOKEN) }
+          return legacyToken
+        }
+        SPUtils.sp.edit { remove(Constants.PREF_GITHUB_API_TOKEN) }
+        return String()
+      }
+      return String()
+    }
+    set(value) {
+      val token = value.trim()
+      if (token == githubApiToken) {
+        SPUtils.sp.edit { remove(Constants.PREF_GITHUB_API_TOKEN) }
+        return
+      }
+
+      SPUtils.sp.edit { remove(Constants.PREF_GITHUB_API_TOKEN) }
+      if (GitHubTokenStore.set(token)) {
+        githubApiTokenVersion += 1
+      }
+    }
+
+  private const val GITHUB_API_ROOT_URL = "https://api.github.com/"
+
+  private val githubApiAuthorizationHeader: String?
+    get() = githubApiToken
+      .trim()
+      .takeIf { it.isNotEmpty() }
+      ?.let { "Bearer $it" }
+
+  fun githubApiAuthorizationHeaderFor(url: String): String? {
+    return githubApiAuthorizationHeader.takeIf { url.startsWith(GITHUB_API_ROOT_URL) }
+  }
 
   var locale: Locale = Locale.getDefault()
     get() {
       if (OsUtils.atLeastT()) {
-        val systemSelectedLocale = SystemServices.localeManager.getApplicationLocales(LibCheckerApp.app.packageName)
-        Timber.d("System selected locale: $systemSelectedLocale")
-        val locale = systemSelectedLocale.get(0) ?: Locale.getDefault()
+        val locale = try {
+          SystemServices.localeManager.getApplicationLocales(LibCheckerApp.app.packageName).get(0) ?: Locale.getDefault()
+        } catch (e: SecurityException) {
+          Timber.w(e, "Unable to read application locales")
+          Locale.getDefault()
+        }
         if (locale != field) {
           field = locale
-          getPreferences().edit { putString(Constants.PREF_LOCALE, locale.toLanguageTag()) }
+          SPUtils.sp.edit { putString(Constants.PREF_LOCALE, locale.toLanguageTag()) }
         }
         return locale
       }
-      val tag = getPreferences().getString(Constants.PREF_LOCALE, null)
+      val tag = SPUtils.sp.getString(Constants.PREF_LOCALE, null)
       if (tag.isNullOrEmpty() || "SYSTEM" == tag) {
         return Locale.getDefault()
       }
@@ -97,7 +155,7 @@ object GlobalValues {
     }
     set(value) {
       field = value
-      getPreferences().edit { putString(Constants.PREF_LOCALE, value.toLanguageTag()) }
+      SPUtils.sp.edit { putString(Constants.PREF_LOCALE, value.toLanguageTag()) }
     }
 
   var uuid: String by SPDelegates(Constants.PREF_UUID, String())

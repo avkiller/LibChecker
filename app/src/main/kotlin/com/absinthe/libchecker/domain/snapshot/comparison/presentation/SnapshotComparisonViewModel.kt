@@ -1,0 +1,190 @@
+package com.absinthe.libchecker.domain.snapshot.comparison.presentation
+
+import android.net.Uri
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.absinthe.libchecker.database.entity.SnapshotItem
+import com.absinthe.libchecker.database.entity.TimeStampItem
+import com.absinthe.libchecker.domain.snapshot.SnapshotRepository
+import com.absinthe.libchecker.domain.snapshot.comparison.model.ComparisonDashboardLabels
+import com.absinthe.libchecker.domain.snapshot.comparison.model.ComparisonDashboardState
+import com.absinthe.libchecker.domain.snapshot.comparison.model.SnapshotComparisonInputs
+import com.absinthe.libchecker.domain.snapshot.comparison.model.SnapshotComparisonPlan
+import com.absinthe.libchecker.domain.snapshot.comparison.model.SnapshotComparisonSide
+import com.absinthe.libchecker.domain.snapshot.comparison.usecase.CompareSnapshotDiffsUseCase
+import com.absinthe.libchecker.domain.snapshot.display.FormatSnapshotTimestampUseCase
+import com.absinthe.libchecker.domain.snapshot.model.SnapshotDiffItem
+import com.absinthe.libraries.utils.manager.TimeRecorder
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
+import timber.log.Timber
+
+class SnapshotComparisonViewModel(
+  private val compareSnapshotDiffs: CompareSnapshotDiffsUseCase,
+  private val snapshotRepository: SnapshotRepository,
+  private val formatSnapshotTimestampUseCase: FormatSnapshotTimestampUseCase,
+  private val comparisonWorkflow: SnapshotComparisonWorkflow
+) : ViewModel() {
+
+  private val _snapshotDiffItemsFlow: MutableSharedFlow<List<SnapshotDiffItem>> = MutableSharedFlow()
+  val snapshotDiffItemsFlow: SharedFlow<List<SnapshotDiffItem>> = _snapshotDiffItemsFlow.asSharedFlow()
+  private var inputs: SnapshotComparisonInputs = SnapshotComparisonInputs()
+
+  private val _effect: MutableSharedFlow<Effect> = MutableSharedFlow()
+  val effect = _effect.asSharedFlow()
+  private var compareDiffJob: Job? = null
+
+  fun compareDiff(
+    previousTimestamp: Long,
+    currentTimestamp: Long
+  ) {
+    if (compareDiffJob?.isActive == true) {
+      compareDiffJob?.cancel()
+    }
+    compareDiffJob = viewModelScope.launch(Dispatchers.IO) {
+      val timer = TimeRecorder().apply { start() }
+      val diffItems = compareSnapshotDiffs(
+        previousTimestamp = previousTimestamp,
+        currentTimestamp = currentTimestamp,
+        shouldClearDiff = false,
+        onProgress = {}
+      )
+      if (diffItems != null) {
+        emitSnapshotDiffItems(diffItems)
+      }
+      timer.end()
+      Timber.d("compareSelectedSnapshotDiff: $timer")
+    }.also {
+      it.start()
+    }
+  }
+
+  suspend fun compareDiffWithSnapshotList(
+    previousItems: List<SnapshotItem>,
+    currentItems: List<SnapshotItem>
+  ) {
+    if (previousItems.isEmpty() || currentItems.isEmpty()) {
+      return
+    }
+
+    val diffItems = compareSnapshotDiffs.compareLists(
+      previousItems = previousItems,
+      currentItems = currentItems
+    ) ?: return
+    emitSnapshotDiffItems(diffItems)
+  }
+
+  fun canCompare(): Boolean {
+    return inputs.canCompare
+  }
+
+  fun needsArchivePreparation(): Boolean {
+    return inputs.hasArchiveInput
+  }
+
+  suspend fun buildCompareAction(
+    cacheDir: File,
+    iconSize: Int
+  ): CompareAction {
+    val currentInputs = inputs
+    val archiveResult = if (currentInputs.hasArchiveInput) {
+      comparisonWorkflow.prepareArchives(
+        inputs = currentInputs,
+        cacheDir = cacheDir,
+        iconSize = iconSize
+      )
+    } else {
+      null
+    }
+
+    val plan = comparisonWorkflow.buildPlan(
+      currentInputs,
+      leftArchive = archiveResult?.leftArchive,
+      rightArchive = archiveResult?.rightArchive
+    )
+    val hasNotEnoughStorageSpace = archiveResult?.hasNotEnoughStorageSpace == true
+
+    return if (plan == null) {
+      CompareAction.Invalid(hasNotEnoughStorageSpace)
+    } else {
+      CompareAction.Ready(plan, hasNotEnoughStorageSpace)
+    }
+  }
+
+  fun clearSnapshotComparisonArchiveCache(cacheDir: File?) {
+    if (!inputs.hasArchiveInput || cacheDir == null) {
+      return
+    }
+    comparisonWorkflow.clearArchiveCache(cacheDir)
+  }
+
+  fun buildSnapshotPairDiff(left: SnapshotItem, right: SnapshotItem): SnapshotDiffItem {
+    return comparisonWorkflow.buildPairDiff(left, right)
+  }
+
+  internal fun buildDashboardState(
+    labels: ComparisonDashboardLabels
+  ): ComparisonDashboardState {
+    return ComparisonDashboardStatePlanner.planState(inputs, labels, ::getFormatDateString)
+  }
+
+  internal fun selectSnapshot(side: SnapshotComparisonSide, timestamp: Long) {
+    inputs = inputs.selectSnapshot(side, timestamp)
+  }
+
+  internal fun selectArchive(side: SnapshotComparisonSide, uri: Uri) {
+    inputs = inputs.selectArchive(side, uri)
+  }
+
+  suspend fun getTimeStamps(): List<TimeStampItem> {
+    return snapshotRepository.getTimeStamps()
+  }
+
+  fun getFormatDateString(timestamp: Long): String {
+    return formatSnapshotTimestampUseCase(timestamp)
+  }
+
+  fun getDashboardCount(timestamp: Long, isLeft: Boolean) = viewModelScope.launch(Dispatchers.IO) {
+    Timber.d("getComparisonDashboardCount: $timestamp, $isLeft")
+    val count = snapshotRepository.getSnapshots(timestamp).size
+    setEffect {
+      Effect.DashboardCountChange(count, isLeft)
+    }
+  }
+
+  private suspend fun emitSnapshotDiffItems(items: List<SnapshotDiffItem>) {
+    _snapshotDiffItemsFlow.emit(items.sortedByDescending { it.updateTime })
+  }
+
+  private fun setEffect(builder: () -> Effect) {
+    val newEffect = builder()
+    viewModelScope.launch {
+      _effect.emit(newEffect)
+    }
+  }
+
+  sealed interface CompareAction {
+    val hasNotEnoughStorageSpace: Boolean
+
+    data class Invalid(
+      override val hasNotEnoughStorageSpace: Boolean
+    ) : CompareAction
+
+    data class Ready(
+      val plan: SnapshotComparisonPlan,
+      override val hasNotEnoughStorageSpace: Boolean
+    ) : CompareAction
+  }
+
+  sealed class Effect {
+    data class DashboardCountChange(
+      val snapshotCount: Int,
+      val isLeft: Boolean
+    ) : Effect()
+  }
+}

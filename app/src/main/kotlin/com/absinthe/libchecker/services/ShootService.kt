@@ -5,11 +5,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
@@ -19,38 +17,23 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.absinthe.libchecker.R
-import com.absinthe.libchecker.annotation.ACTIVITY
-import com.absinthe.libchecker.annotation.PROVIDER
-import com.absinthe.libchecker.annotation.RECEIVER
-import com.absinthe.libchecker.annotation.SERVICE
 import com.absinthe.libchecker.constant.Constants
-import com.absinthe.libchecker.constant.GlobalValues
-import com.absinthe.libchecker.constant.OnceTag
-import com.absinthe.libchecker.data.app.LocalAppDataSource
-import com.absinthe.libchecker.database.Repositories
-import com.absinthe.libchecker.database.entity.SnapshotItem
-import com.absinthe.libchecker.database.entity.TimeStampItem
-import com.absinthe.libchecker.features.home.ui.MainActivity
+import com.absinthe.libchecker.domain.app.repository.InstalledAppRepository
+import com.absinthe.libchecker.domain.app.repository.PackageListLoadException
+import com.absinthe.libchecker.domain.home.ui.MainActivity
+import com.absinthe.libchecker.domain.snapshot.display.FormatSnapshotTimestampUseCase
+import com.absinthe.libchecker.domain.snapshot.list.capture.CaptureInstalledSnapshotUseCase
 import com.absinthe.libchecker.utils.OsUtils
-import com.absinthe.libchecker.utils.PackageUtils
-import com.absinthe.libchecker.utils.extensions.getAppName
 import com.absinthe.libchecker.utils.extensions.getColorByAttr
-import com.absinthe.libchecker.utils.extensions.getCompileSdkVersion
-import com.absinthe.libchecker.utils.extensions.getPackageSize
-import com.absinthe.libchecker.utils.extensions.getPermissionsList
-import com.absinthe.libchecker.utils.extensions.getVersionCode
-import com.absinthe.libchecker.utils.toJson
 import com.absinthe.libraries.utils.manager.TimeRecorder
 import java.lang.ref.WeakReference
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import jonathanfinerty.once.Once
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import org.koin.android.ext.android.inject
 import timber.log.Timber
 
 private const val SHOOT_CHANNEL_ID = "shoot_channel"
@@ -64,7 +47,9 @@ class ShootService : LifecycleService() {
   private val notificationIdShootSuccess = notificationIdShoot + 1
   private val builder by lazy { NotificationCompat.Builder(this, SHOOT_CHANNEL_ID) }
   private val notificationManager by lazy { NotificationManagerCompat.from(this) }
-  private val repository = Repositories.lcRepository
+  private val installedAppRepository: InstalledAppRepository by inject()
+  private val captureInstalledSnapshot: CaptureInstalledSnapshotUseCase by inject()
+  private val formatSnapshotTimestamp: FormatSnapshotTimestampUseCase by inject()
   private val listenerList = RemoteCallbackList<OnShootListener>()
 
   private val binder by lazy { ShootBinder(this) }
@@ -133,13 +118,17 @@ class ShootService : LifecycleService() {
   }
 
   @Synchronized
-  private fun notifyFinished(timestamp: Long) {
+  private fun notifyFinished(timestamp: Long?) {
     Timber.i("notifyFinished start")
     val count = listenerList.beginBroadcast()
     for (i in 0 until count) {
       try {
         Timber.i("notifyFinished $i")
-        listenerList.getBroadcastItem(i).onShootFinished(timestamp)
+        if (timestamp == null) {
+          listenerList.getBroadcastItem(i).onShootFailed()
+        } else {
+          listenerList.getBroadcastItem(i).onShootFinished(timestamp)
+        }
       } catch (e: RemoteException) {
         Timber.e(e)
       }
@@ -160,11 +149,8 @@ class ShootService : LifecycleService() {
     listenerList.finishBroadcast()
   }
 
-  private fun computeSnapshots(dropPrevious: Boolean = false, stopWhenFinish: Boolean = false) = lifecycleScope.launch(Dispatchers.IO) {
-    computeSnapshotsImpl(LocalAppDataSource.getApplicationList(true), dropPrevious, stopWhenFinish)
-  }
-
-  private suspend fun computeSnapshotsImpl(appList: List<PackageInfo>, dropPrevious: Boolean = false, stopWhenFinish: Boolean = false) {
+  @Synchronized
+  private fun computeSnapshots(dropPrevious: Boolean = false, stopWhenFinish: Boolean = false) {
     if (isComputing) {
       Timber.w("computeSnapshots isComputing, ignored")
       return
@@ -183,165 +169,81 @@ class ShootService : LifecycleService() {
         notificationPermissionGranted
 
     notificationManager.cancel(notificationIdShootSuccess)
-    areNotificationsEnabled = showNotification() && canPostNotification
+    val foregroundStarted = showNotification()
+    areNotificationsEnabled = foregroundStarted && canPostNotification
+    if (foregroundStarted.not() && stopWhenFinish) {
+      _isShooting = false
+      isComputing = false
+      stopSelf()
+      return
+    }
 
     if (areNotificationsEnabled) {
       builder.foregroundServiceBehavior = NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE
       notificationManager.notify(notificationIdShoot, builder.build())
     }
 
-    val timer = TimeRecorder().also {
-      it.start()
-    }
-    val ts = System.currentTimeMillis()
-
-    repository.deleteAllSnapshotDiffItems()
-
-    val size = appList.size
-    val dbList = mutableListOf<SnapshotItem>()
-    val currentSnapshotTimestamp = GlobalValues.snapshotTimestamp
-    var count = 0
-
-    if (areNotificationsEnabled) {
-      builder.setProgress(size, count, false)
-      notificationManager.notify(notificationIdShoot, builder.build())
-    }
-
-    var currentProgress: Int
-    var lastProgress = 0
-    var ai: ApplicationInfo
-    var dbSnapshotItem: SnapshotItem?
-    val shouldSaveFullSnapshot = !Once.beenDone(Once.THIS_APP_INSTALL, OnceTag.SHOULD_SAVE_FULL_SNAPSHOT)
-
-    for (info in appList) {
-      ai = info.applicationInfo ?: continue
-      dbSnapshotItem = repository.getSnapshot(currentSnapshotTimestamp, info.packageName)
-
-      if (dbSnapshotItem?.versionCode == info.getVersionCode() &&
-        dbSnapshotItem.lastUpdatedTime == info.lastUpdateTime &&
-        dbSnapshotItem.packageSize == info.getPackageSize(true) &&
-        !shouldSaveFullSnapshot
-      ) {
-        Timber.d("computeSnapshots: ${info.packageName} is up to date")
-        dbList.add(
-          dbSnapshotItem.copy().also {
-            it.id = null
-            it.timeStamp = ts
-          }
-        )
-      } else {
-        val activitiesPi = runCatching { PackageUtils.getPackageInfo(info.packageName, PackageManager.GET_ACTIVITIES) }.getOrElse { continue }
-        val othersPi = runCatching {
-          PackageUtils.getPackageInfo(info.packageName, PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS or PackageManager.GET_PROVIDERS or PackageManager.GET_PERMISSIONS or PackageManager.GET_META_DATA)
-        }.getOrElse { continue }
-        val abi = PackageUtils.getAbi(info)
-        if (abi != Constants.ERROR) {
-          dbList.add(
-            SnapshotItem(
-              id = null,
-              packageName = info.packageName,
-              timeStamp = ts,
-              label = info.getAppName(packageManager).toString(),
-              versionName = info.versionName.toString(),
-              versionCode = info.getVersionCode(),
-              installedTime = info.firstInstallTime,
-              lastUpdatedTime = info.lastUpdateTime,
-              isSystem = (ai.flags and ApplicationInfo.FLAG_SYSTEM) > 0,
-              abi = abi.toShort(),
-              targetApi = ai.targetSdkVersion.toShort(),
-              nativeLibs = PackageUtils.getNativeDirLibs(info).toJson().orEmpty(),
-              services = PackageUtils.getComponentStringList(othersPi, SERVICE, false)
-                .toJson().orEmpty(),
-              activities = PackageUtils.getComponentStringList(activitiesPi, ACTIVITY, false)
-                .toJson().orEmpty(),
-              receivers = PackageUtils.getComponentStringList(othersPi, RECEIVER, false)
-                .toJson().orEmpty(),
-              providers = PackageUtils.getComponentStringList(othersPi, PROVIDER, false)
-                .toJson().orEmpty(),
-              permissions = othersPi.getPermissionsList().toJson().orEmpty(),
-              metadata = PackageUtils.getMetaDataItems(othersPi).toJson().orEmpty(),
-              packageSize = info.getPackageSize(true),
-              compileSdk = info.getCompileSdkVersion().toShort(),
-              minSdk = ai.minSdkVersion.toShort()
-            )
-          )
-        }
+    lifecycleScope.launch(Dispatchers.IO) {
+      var timestamp: Long? = null
+      try {
+        timestamp = computeSnapshotsImpl(installedAppRepository.getApplicationList(true), dropPrevious)
+      } catch (e: PackageListLoadException) {
+        Timber.w(e)
+      } finally {
+        finishShooting(timestamp, stopWhenFinish)
       }
-
-      count++
-      currentProgress = count * 100 / size
-      if (currentProgress > lastProgress) {
-        lastProgress = currentProgress
-        notifyProgress(currentProgress)
-      }
-
-      if (dbList.size >= 50) {
-        if (areNotificationsEnabled) {
-          builder.setProgress(size, count, false)
-          notificationManager.notify(notificationIdShoot, builder.build())
-        }
-        repository.insertSnapshots(dbList)
-        dbList.clear()
-      }
-    }
-
-    if (areNotificationsEnabled) {
-      builder.setProgress(size, count, false)
-      notificationManager.notify(notificationIdShoot, builder.build())
-    }
-    repository.insertSnapshots(dbList)
-
-    val systemProps = mutableMapOf<String, String>()
-    systemProps[Constants.SystemProps.RO_BUILD_VERSION_SECURITY_PATCH] = Build.VERSION.SECURITY_PATCH
-    systemProps[Constants.SystemProps.RO_BUILD_ID] = Build.ID
-
-    repository.insert(TimeStampItem(ts, null, systemProps.toJson()))
-
-    if (dropPrevious) {
-      Timber.i("deleteSnapshotsAndTimeStamp: ${GlobalValues.snapshotTimestamp}")
-      repository.deleteSnapshotsAndTimeStamp(GlobalValues.snapshotTimestamp)
-    }
-
-    if (GlobalValues.snapshotAutoRemoveThreshold > 0) {
-      repository.retainLatestSnapshotsAndRemoveOld(
-        count = GlobalValues.snapshotAutoRemoveThreshold,
-        forceShowLoading = false
-      )
-    }
-
-    if (areNotificationsEnabled) {
-      notificationManager.cancel(notificationIdShoot)
-
-      builder.setProgress(0, 0, false)
-        .setOngoing(false)
-        .setContentTitle(getString(R.string.noti_shoot_title_saved))
-        .setContentText(getFormatDateString(ts))
-      notificationManager.notify(notificationIdShootSuccess, builder.build())
-    }
-
-    if (!Once.beenDone(Once.THIS_APP_INSTALL, OnceTag.SHOULD_SAVE_FULL_SNAPSHOT)) {
-      Once.markDone(OnceTag.SHOULD_SAVE_FULL_SNAPSHOT)
-    }
-
-    timer.end()
-    Timber.d("computeSnapshots: $timer")
-
-    GlobalValues.snapshotTimestamp = ts
-    _isShooting = false
-    notifyFinished(ts)
-    ServiceCompat.stopForeground(this@ShootService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-    Timber.i("computeSnapshots end")
-    isComputing = false
-
-    if (stopWhenFinish) {
-      stopSelf()
     }
   }
 
-  private fun getFormatDateString(timestamp: Long): String {
-    val simpleDateFormat = SimpleDateFormat("yyyy-MM-dd, HH:mm:ss", Locale.getDefault())
-    val date = Date(timestamp)
-    return simpleDateFormat.format(date)
+  private suspend fun computeSnapshotsImpl(appList: List<PackageInfo>, dropPrevious: Boolean): Long {
+    val timer = TimeRecorder().also {
+      it.start()
+    }
+    if (areNotificationsEnabled) {
+      builder.setProgress(appList.size, 0, false)
+      notificationManager.notify(notificationIdShoot, builder.build())
+    }
+
+    val result = captureInstalledSnapshot(
+      CaptureInstalledSnapshotUseCase.Request(
+        appList = appList,
+        dropPrevious = dropPrevious,
+        systemProps = mapOf(
+          Constants.SystemProps.RO_BUILD_VERSION_SECURITY_PATCH to Build.VERSION.SECURITY_PATCH,
+          Constants.SystemProps.RO_BUILD_ID to Build.ID
+        )
+      )
+    ) { progress ->
+      notifyProgress(progress.percent)
+      if (areNotificationsEnabled) {
+        builder.setProgress(progress.total, progress.count, false)
+        notificationManager.notify(notificationIdShoot, builder.build())
+      }
+    }
+    timer.end()
+    Timber.d("computeSnapshots: $timer")
+    return result.timestamp
+  }
+
+  @Synchronized
+  private fun finishShooting(timestamp: Long?, stopWhenFinish: Boolean) {
+    try {
+      ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+      notificationManager.cancel(notificationIdShoot)
+      if (areNotificationsEnabled) {
+        val title = if (timestamp == null) R.string.package_list_load_failed else R.string.noti_shoot_title_saved
+        builder.setProgress(0, 0, false)
+          .setOngoing(false)
+          .setContentTitle(getString(title))
+          .setContentText(timestamp?.let(formatSnapshotTimestamp::invoke))
+        notificationManager.notify(notificationIdShootSuccess, builder.build())
+      }
+    } finally {
+      _isShooting = false
+      isComputing = false
+      notifyFinished(timestamp)
+      if (stopWhenFinish) stopSelf()
+    }
   }
 
   private fun initBuilder() {
@@ -356,7 +258,7 @@ class ShootService : LifecycleService() {
     )
     builder.setContentTitle(getString(R.string.noti_shoot_title))
       .setSmallIcon(R.drawable.ic_logo)
-      .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
+      .setLargeIcon(ContextCompat.getDrawable(this, R.mipmap.ic_launcher)?.toBitmap())
       .setPriority(NotificationCompat.PRIORITY_LOW)
       .setContentIntent(pi)
       .setProgress(0, 0, true)

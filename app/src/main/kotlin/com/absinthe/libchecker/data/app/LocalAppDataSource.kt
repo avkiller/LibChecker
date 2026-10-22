@@ -1,107 +1,31 @@
 package com.absinthe.libchecker.data.app
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.lifecycleScope
 import com.absinthe.libchecker.app.SystemServices
 import com.absinthe.libchecker.compat.PackageManagerCompat
+import com.absinthe.libchecker.domain.app.model.PackageChangeState
+import com.absinthe.libchecker.domain.app.repository.PackageListLoadException
 import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.PackageUtils
 import com.absinthe.libchecker.utils.extensions.isArchivedPackage
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import timber.log.Timber
 
-object LocalAppDataSource : AppDataSource {
+class LocalAppDataSource(
+  private val readInstalledPackages: (Long) -> List<PackageInfo> = PackageManagerCompat::getInstalledPackages
+) : AppDataSource {
 
   private val applicationsLock = ReentrantReadWriteLock()
   private val applicationMap: MutableMap<String, PackageInfo> = linkedMapOf()
   private var applicationListSnapshot: List<PackageInfo> = emptyList()
   private var applicationMapSnapshot: Map<String, PackageInfo> = emptyMap()
   private var applicationsLoaded: Boolean = false
-  val apexPackageSet: Set<String> by lazy { loadApexPackageSet() }
-
-  private val _PackageChangeFlow: MutableSharedFlow<PackageChangeState> = MutableSharedFlow()
-  val packageChangeFlow: SharedFlow<PackageChangeState> = _PackageChangeFlow.asSharedFlow()
-
-  private var coroutineScope: CoroutineScope? = null
-  private val pendingIntents = ArrayDeque<PendingPackageIntent>()
-
-  private val packageReceiver by lazy {
-    object : BroadcastReceiver() {
-      override fun onReceive(context: Context, intent: Intent?) {
-        val intent = intent ?: return
-        Timber.d("package receiver received: ${intent.action}, data: ${intent.data}")
-
-        val packageName = intent.data?.encodedSchemeSpecificPart.orEmpty()
-        val action = intent.action ?: return
-        if (packageName.isBlank()) {
-          return
-        }
-
-        pendingIntents.add(PendingPackageIntent(action, packageName))
-
-        coroutineScope?.launch {
-          delay(1000)
-
-          while (pendingIntents.isNotEmpty() && isActive) {
-            val currentIntent = pendingIntents.removeFirst()
-            val currentPackageName = currentIntent.packageName
-
-            if (pendingIntents.none { it.packageName == currentPackageName }) {
-              generatePackageChangeState(currentIntent)?.let { state ->
-                updateApplications(state)
-                _PackageChangeFlow.emit(state)
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  fun addLifecycleOwner(owner: LifecycleOwner) {
-    coroutineScope = owner.lifecycleScope
-
-    runCatching {
-      (owner as? Context)?.let {
-        val intentFilter = IntentFilter().apply {
-          addAction(Intent.ACTION_PACKAGE_ADDED)
-          addAction(Intent.ACTION_PACKAGE_REPLACED)
-          addAction(Intent.ACTION_PACKAGE_REMOVED)
-          addDataScheme("package")
-        }
-        ContextCompat.registerReceiver(
-          it,
-          packageReceiver,
-          intentFilter,
-          ContextCompat.RECEIVER_NOT_EXPORTED
-        )
-      }
-    }
-  }
-
-  fun removeLifecycleOwner(owner: LifecycleOwner) {
-    coroutineScope = null
-    runCatching {
-      (owner as? Context)?.unregisterReceiver(packageReceiver)
-    }
-  }
+  private val apexPackageSet: Set<String> by lazy { loadApexPackageSet() }
 
   override fun getApplicationList(forceUpdate: Boolean): List<PackageInfo> {
     ensureApplicationsLoaded(forceUpdate)
@@ -117,18 +41,22 @@ object LocalAppDataSource : AppDataSource {
     }
   }
 
-  fun getApplicationCount(forceUpdate: Boolean = false): Int {
+  override fun getApplicationCount(forceUpdate: Boolean): Int {
     ensureApplicationsLoaded(forceUpdate)
     return applicationsLock.read {
       applicationMap.size
     }
   }
 
-  fun getRandomApplicationInfo(forceUpdate: Boolean = false): ApplicationInfo? {
+  override fun getRandomApplicationInfo(forceUpdate: Boolean): ApplicationInfo? {
     ensureApplicationsLoaded(forceUpdate)
     return applicationsLock.read {
       applicationListSnapshot.randomOrNull()?.applicationInfo
     }
+  }
+
+  override fun getApexPackageNames(): Set<String> {
+    return apexPackageSet
   }
 
   private fun ensureApplicationsLoaded(forceUpdate: Boolean = false) {
@@ -143,24 +71,27 @@ object LocalAppDataSource : AppDataSource {
   }
 
   private fun refreshApplicationsLocked() {
+    val refreshed = try {
+      loadApplications()
+        .filter { it.isVisiblePackageInfo() }
+        .associateBy { it.packageName }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      throw PackageListLoadException(e)
+    }
     applicationMap.clear()
-    loadApplications()
-      .asSequence()
-      .filter { it.isVisiblePackageInfo() }
-      .forEach { applicationMap[it.packageName] = it }
+    applicationMap.putAll(refreshed)
     updateSnapshotsLocked()
     applicationsLoaded = true
   }
 
   private fun loadApplications(): List<PackageInfo> {
     Timber.d("loadApplications start")
-    val list = PackageManagerCompat.getInstalledPackages(getInstalledPackageFlags())
+    val flags = if (OsUtils.atLeastV()) PackageManager.MATCH_ARCHIVED_PACKAGES else 0L
+    val list = readInstalledPackages(flags)
     Timber.d("loadApplications end, apps count: ${list.size}")
     return list
-  }
-
-  private fun getInstalledPackageFlags(): Long {
-    return if (OsUtils.atLeastV()) PackageManager.MATCH_ARCHIVED_PACKAGES else 0L
   }
 
   private fun loadPackageInfo(packageName: String): PackageInfo? {
@@ -192,27 +123,19 @@ object LocalAppDataSource : AppDataSource {
     return emptySet()
   }
 
-  private fun updateApplications(state: PackageChangeState) {
+  override fun updateApplications(state: PackageChangeState) {
     applicationsLock.write {
       if (!applicationsLoaded) {
-        refreshApplicationsLocked()
+        // A later explicit load retries. Broadcasts must not publish a partial initial cache.
+        return
       }
       val packageName = state.packageName
       when (state) {
-        is PackageChangeState.Added -> {
-          val packageInfo = loadPackageInfo(packageName)
-          if (packageInfo?.isVisiblePackageInfo() == true) {
-            applicationMap[packageName] = packageInfo
-          } else {
-            applicationMap.remove(packageName)
-          }
-        }
-
         is PackageChangeState.Removed -> {
           applicationMap.remove(packageName)
         }
 
-        is PackageChangeState.Replaced -> {
+        is PackageChangeState.Added, is PackageChangeState.Replaced -> {
           val packageInfo = loadPackageInfo(packageName)
           if (packageInfo?.isVisiblePackageInfo() == true) {
             applicationMap[packageName] = packageInfo
@@ -229,18 +152,4 @@ object LocalAppDataSource : AppDataSource {
     applicationListSnapshot = applicationMap.values.toList()
     applicationMapSnapshot = applicationMap.toMap()
   }
-
-  private fun generatePackageChangeState(intent: PendingPackageIntent): PackageChangeState? {
-    return when (intent.action) {
-      Intent.ACTION_PACKAGE_ADDED -> PackageChangeState.Added(intent.packageName)
-      Intent.ACTION_PACKAGE_REMOVED -> PackageChangeState.Removed(intent.packageName)
-      Intent.ACTION_PACKAGE_REPLACED -> PackageChangeState.Replaced(intent.packageName)
-      else -> null
-    }
-  }
-
-  private data class PendingPackageIntent(
-    val action: String,
-    val packageName: String
-  )
 }

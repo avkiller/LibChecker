@@ -1,8 +1,8 @@
 package com.absinthe.libchecker.database.entity
 
 import android.os.Parcelable
-import androidx.room.Entity
-import androidx.room.PrimaryKey
+import androidx.room3.Entity
+import androidx.room3.PrimaryKey
 import kotlinx.parcelize.Parcelize
 
 @Parcelize
@@ -19,4 +19,11 @@ data class LCItem(
   val features: Int,
   val targetApi: Short,
   val variant: Short
-) : Parcelable
+) : Parcelable {
+  val isArchived: Boolean
+    get() = versionName == ARCHIVED_VERSION_NAME
+
+  companion object {
+    const val ARCHIVED_VERSION_NAME = "Archived"
+  }
+}

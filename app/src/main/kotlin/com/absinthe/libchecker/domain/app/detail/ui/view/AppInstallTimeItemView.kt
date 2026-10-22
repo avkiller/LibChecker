@@ -1,0 +1,75 @@
+package com.absinthe.libchecker.domain.app.detail.ui.view
+
+import android.content.Context
+import android.view.ViewGroup
+import android.widget.LinearLayout
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.domain.app.detail.action.AppInstalledTimeDisplayData
+import com.absinthe.libchecker.utils.extensions.dp
+import com.absinthe.libchecker.utils.extensions.setLongClickCopiedToClipboard
+
+class AppInstallTimeItemView(context: Context) : AppInstallDetailSectionView(context, R.string.lib_detail_app_installed_time) {
+
+  private val contentView = ContentView(context).also(::setContentView)
+
+  fun bind(display: AppInstalledTimeDisplayData) {
+    contentView.bind(
+      firstInstalledTime = display.firstInstalledTime,
+      lastUpdatedTime = display.lastUpdatedTime
+    )
+    container.setLongClickCopiedToClipboard(contentView.getAllContentText())
+  }
+
+  private class ContentView(context: Context) : LinearLayout(context) {
+    private val firstInstalledLabel = context.getString(R.string.lib_detail_app_first_installed_time)
+    private val lastUpdatedLabel = context.getString(R.string.lib_detail_app_last_updated_time)
+    private var firstInstalledTime: CharSequence = ""
+    private var lastUpdatedTime: CharSequence = ""
+
+    private val firstInstalledView = NativeLibItemView(context).apply {
+      layoutParams = LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+      )
+      isClickable = false
+      isLongClickable = false
+      bindText(firstInstalledLabel, firstInstalledTime)
+    }
+
+    private val lastUpdatedView = NativeLibItemView(context).apply {
+      layoutParams = LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+      )
+      isClickable = false
+      isLongClickable = false
+      bindText(lastUpdatedLabel, lastUpdatedTime)
+    }
+
+    init {
+      orientation = VERTICAL
+      setPadding(0, 8.dp, 0, 8.dp)
+      addView(firstInstalledView)
+      addView(lastUpdatedView)
+    }
+
+    fun bind(
+      firstInstalledTime: CharSequence,
+      lastUpdatedTime: CharSequence
+    ) {
+      this.firstInstalledTime = firstInstalledTime
+      this.lastUpdatedTime = lastUpdatedTime
+      firstInstalledView.bindText(firstInstalledLabel, firstInstalledTime)
+      lastUpdatedView.bindText(lastUpdatedLabel, lastUpdatedTime)
+    }
+
+    fun getAllContentText(): String {
+      return listOf(
+        firstInstalledLabel,
+        firstInstalledTime,
+        lastUpdatedLabel,
+        lastUpdatedTime
+      ).joinToString(System.lineSeparator())
+    }
+  }
+}

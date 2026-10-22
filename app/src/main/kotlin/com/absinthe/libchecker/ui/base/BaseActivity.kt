@@ -1,7 +1,9 @@
 package com.absinthe.libchecker.ui.base
 
 import android.content.Context
+import android.content.res.Configuration
 import android.content.res.Resources
+import android.os.BadParcelableException
 import android.os.Bundle
 import android.text.method.TextKeyListener
 import android.view.View
@@ -10,7 +12,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.viewbinding.ViewBinding
 import com.absinthe.libchecker.R
 import com.absinthe.libchecker.constant.GlobalValues
-import com.absinthe.libchecker.utils.LocaleUtils
 import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.extensions.applySystemBarsMargin
 import com.absinthe.libchecker.utils.extensions.applySystemBarsPadding
@@ -27,7 +28,12 @@ abstract class BaseActivity<VB : ViewBinding> :
   override fun attachBaseContext(newBase: Context) {
     val locale = GlobalValues.locale
     appliedLocale = locale
-    super.attachBaseContext(LocaleUtils.wrapContext(newBase, locale))
+    Locale.setDefault(locale)
+    val configuration = Configuration(newBase.resources.configuration).apply {
+      setLocale(locale)
+      setLayoutDirection(locale)
+    }
+    super.attachBaseContext(newBase.createConfigurationContext(configuration))
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,10 +41,11 @@ abstract class BaseActivity<VB : ViewBinding> :
     if (shouldApplyTranslucentSystemBars()) {
       onApplyTranslucentSystemBars()
     }
-    super.onCreate(savedInstanceState)
-    binding = (inflateBinding(layoutInflater) as VB).also {
+    super.onCreate(savedInstanceState.discardIfContainsUnreadableParcelable(javaClass.classLoader))
+    binding = inflateBinding(layoutInflater).also {
       setContentView(it.root)
     }
+    ThemeTransitionController.animateEnterIfNeeded(this)
     if (shouldApplyTranslucentSystemBars()) {
       onApplyContentWindowInsets()
     }
@@ -55,6 +62,7 @@ abstract class BaseActivity<VB : ViewBinding> :
 
   override fun onDestroy() {
     super.onDestroy()
+    ThemeTransitionController.onActivityDestroyed(this)
     releaseTextKeyListeners()
   }
 
@@ -72,10 +80,6 @@ abstract class BaseActivity<VB : ViewBinding> :
     return true
   }
 
-  open fun computeUserThemeKey(): String {
-    return GlobalValues.darkMode
-  }
-
   open fun onApplyTranslucentSystemBars() {
     enableEdgeToEdge()
     if (OsUtils.atLeastQ()) {
@@ -90,7 +94,10 @@ abstract class BaseActivity<VB : ViewBinding> :
   }
 
   open fun onApplyUserThemeResource(theme: Resources.Theme, isDecorView: Boolean) {
-    theme.applyStyle(R.style.ThemeOverlay, true)
+    theme.applyStyle(
+      resolveUserThemeOverlay(GlobalValues.isAmoledTheme, resources.configuration.uiMode),
+      true
+    )
   }
 
   protected fun isBindingInitialized(): Boolean {
@@ -107,6 +114,42 @@ abstract class BaseActivity<VB : ViewBinding> :
       }
     }.onFailure {
       Timber.w(it)
+    }
+  }
+}
+
+internal fun resolveUserThemeOverlay(isAmoledThemeEnabled: Boolean, uiMode: Int): Int {
+  val isNightMode = uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+  return if (isAmoledThemeEnabled && isNightMode) {
+    R.style.ThemeOverlay_Amoled
+  } else {
+    R.style.ThemeOverlay
+  }
+}
+
+internal fun Bundle?.discardIfContainsUnreadableParcelable(classLoader: ClassLoader?): Bundle? {
+  if (this == null) {
+    return null
+  }
+  return try {
+    validateParcelableContents(classLoader)
+    this
+  } catch (exception: BadParcelableException) {
+    Timber.w(exception, "Discarding activity state that cannot be restored")
+    null
+  }
+}
+
+@Suppress("DEPRECATION")
+private fun Bundle.validateParcelableContents(classLoader: ClassLoader?) {
+  if (classLoader != null) {
+    this.classLoader = classLoader
+  }
+  keySet().forEach { key ->
+    when (val value = get(key)) {
+      is Bundle -> value.validateParcelableContents(classLoader)
+      is Array<*> -> value.filterIsInstance<Bundle>().forEach { it.validateParcelableContents(classLoader) }
+      is Iterable<*> -> value.filterIsInstance<Bundle>().forEach { it.validateParcelableContents(classLoader) }
     }
   }
 }

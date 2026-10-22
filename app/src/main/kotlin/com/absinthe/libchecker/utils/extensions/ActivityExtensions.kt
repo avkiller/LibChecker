@@ -1,52 +1,72 @@
 package com.absinthe.libchecker.utils.extensions
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.view.View
-import androidx.core.os.bundleOf
+import androidx.activity.result.ActivityResultLauncher
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.FragmentActivity
+import com.absinthe.libchecker.R
 import com.absinthe.libchecker.annotation.NATIVE
 import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.database.entity.LCItem
-import com.absinthe.libchecker.features.applist.detail.bean.DetailExtraBean
-import com.absinthe.libchecker.features.applist.detail.ui.AppDetailActivity
-import com.absinthe.libchecker.features.applist.detail.ui.EXTRA_DETAIL_BEAN
-import com.absinthe.libchecker.features.applist.detail.ui.EXTRA_LC_ITEM
-import com.absinthe.libchecker.features.applist.detail.ui.EXTRA_PACKAGE_NAME
-import com.absinthe.libchecker.features.applist.detail.ui.OverlayDetailBottomSheetDialogFragment
-import com.absinthe.libchecker.features.statistics.ui.EXTRA_REF_LABEL
-import com.absinthe.libchecker.features.statistics.ui.EXTRA_REF_LIST
-import com.absinthe.libchecker.features.statistics.ui.EXTRA_REF_NAME
-import com.absinthe.libchecker.features.statistics.ui.EXTRA_REF_TYPE
-import com.absinthe.libchecker.features.statistics.ui.LibReferenceActivity
+import com.absinthe.libchecker.domain.app.detail.model.DetailExtraBean
+import com.absinthe.libchecker.domain.app.detail.navigation.EXTRA_DETAIL_BEAN
+import com.absinthe.libchecker.domain.app.detail.navigation.EXTRA_LC_ITEM
+import com.absinthe.libchecker.domain.app.detail.navigation.EXTRA_PACKAGE_NAME
+import com.absinthe.libchecker.domain.app.detail.ui.AppDetailActivity
+import com.absinthe.libchecker.domain.app.detail.ui.dialog.OverlayDetailBottomSheetDialogFragment
+import com.absinthe.libchecker.domain.statistics.reference.ui.EXTRA_REF_LABEL
+import com.absinthe.libchecker.domain.statistics.reference.ui.EXTRA_REF_LIST
+import com.absinthe.libchecker.domain.statistics.reference.ui.EXTRA_REF_NAME
+import com.absinthe.libchecker.domain.statistics.reference.ui.EXTRA_REF_TYPE
+import com.absinthe.libchecker.domain.statistics.reference.ui.LibReferenceActivity
 import com.absinthe.libchecker.utils.Toasty
+import timber.log.Timber
+
+fun <I> ActivityResultLauncher<I>.launchDocument(context: Context, input: I): Boolean {
+  return try {
+    launch(input)
+    true
+  } catch (e: ActivityNotFoundException) {
+    Timber.w(e)
+    Toasty.showLong(context, R.string.toast_document_picker_unavailable)
+    false
+  }
+}
 
 fun FragmentActivity.launchDetailPage(item: LCItem, refName: String? = null, refType: Int = NATIVE, forceDetail: Boolean = false) {
+  if (item.isArchived) {
+    Toasty.showLong(this, R.string.toast_archived_app_detail_unavailable)
+    return
+  }
   findViewById<View>(androidx.appcompat.R.id.search_src_text)?.clearFocus()
   if (item.abi.toInt() == Constants.OVERLAY && !forceDetail) {
-    OverlayDetailBottomSheetDialogFragment().apply {
-      arguments = bundleOf(
-        EXTRA_LC_ITEM to item
-      )
-      show(
+    OverlayDetailBottomSheetDialogFragment()
+      .putArguments(EXTRA_LC_ITEM to item)
+      .show(
         supportFragmentManager,
         OverlayDetailBottomSheetDialogFragment::class.java.name
       )
-    }
   } else {
     val intent = Intent(this, AppDetailActivity::class.java)
       .putExtras(
-        bundleOf(
-          EXTRA_PACKAGE_NAME to item.packageName,
-          EXTRA_REF_NAME to refName,
-          EXTRA_REF_TYPE to refType,
-          EXTRA_DETAIL_BEAN to DetailExtraBean(
-            item.features,
-            item.variant
+        Bundle().apply {
+          putString(EXTRA_PACKAGE_NAME, item.packageName)
+          putString(EXTRA_REF_NAME, refName)
+          putInt(EXTRA_REF_TYPE, refType)
+          putParcelable(
+            EXTRA_DETAIL_BEAN,
+            DetailExtraBean(
+              item.features,
+              item.variant
+            )
           )
-        )
+        }
       )
     runCatching {
       startActivity(intent)
@@ -64,12 +84,12 @@ fun Activity.launchLibReferencePage(
 ) {
   val intent = Intent(this, LibReferenceActivity::class.java)
     .putExtras(
-      bundleOf(
-        EXTRA_REF_NAME to refName,
-        EXTRA_REF_LABEL to refLabel,
-        EXTRA_REF_TYPE to refType,
-        EXTRA_REF_LIST to refList
-      )
+      Bundle().apply {
+        putString(EXTRA_REF_NAME, refName)
+        putString(EXTRA_REF_LABEL, refLabel)
+        putInt(EXTRA_REF_TYPE, refType)
+        putStringArray(EXTRA_REF_LIST, refList)
+      }
     )
   startActivity(intent)
 }

@@ -1,0 +1,96 @@
+package com.absinthe.libchecker.domain.statistics.chart.source.impl
+
+import android.content.Context
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.database.entity.LCItem
+import com.absinthe.libchecker.domain.statistics.chart.model.ChartSourceItem
+import com.absinthe.libchecker.domain.statistics.chart.source.BaseChartDataSource
+import com.absinthe.libchecker.domain.statistics.chart.source.showPieData
+import com.absinthe.libchecker.domain.statistics.chart.usecase.AbiChartData
+import com.absinthe.libchecker.utils.OsUtils
+import com.github.mikephil.charting.charts.PieChart
+import com.github.mikephil.charting.data.PieEntry
+import com.github.mikephil.charting.utils.ColorTemplate
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+class ABIChartDataSource(
+  items: List<LCItem>,
+  private val buildAbiChartData: suspend (List<LCItem>) -> AbiChartData?
+) : BaseChartDataSource<PieChart>(items) {
+  override val classifiedMap: HashMap<Int, ChartSourceItem> = HashMap(3)
+
+  override suspend fun fillChartView(chartView: PieChart, onProgressUpdated: (Int) -> Unit) {
+    withContext(Dispatchers.Default) {
+      val context = chartView.context ?: return@withContext
+      val parties = listOf(
+        context.resources.getString(R.string.string_64_bit),
+        context.resources.getString(R.string.string_32_bit),
+        context.resources.getString(R.string.no_libs)
+      )
+      val entries: ArrayList<PieEntry<*>> = ArrayList()
+      val classifiedList = listOf(
+        mutableListOf<LCItem>(),
+        mutableListOf(),
+        mutableListOf()
+      )
+      classifiedMap.clear()
+      val chartData = buildAbiChartData(items) ?: return@withContext
+
+      classifiedList[IS_64_BIT].addAll(chartData.is64Bit)
+      classifiedList[IS_32_BIT].addAll(chartData.is32Bit)
+      classifiedList[NO_LIBS].addAll(chartData.noNativeLibs)
+
+      classifiedMap[IS_64_BIT] = ChartSourceItem(R.drawable.ic_abi_label_64bit, false, classifiedList[IS_64_BIT])
+      classifiedMap[IS_32_BIT] = ChartSourceItem(R.drawable.ic_abi_label_32bit, false, classifiedList[IS_32_BIT])
+      classifiedMap[NO_LIBS] = ChartSourceItem(R.drawable.ic_abi_label_no_libs, false, classifiedList[NO_LIBS])
+
+      // NOTE: The order of the entries when being added to the entries array determines their position around the center of
+      // the chart.
+      for (i in parties.indices) {
+        entries.add(PieEntry(classifiedList[i].size.toFloat(), parties[i % parties.size]))
+      }
+      val colors: ArrayList<Int> = ArrayList()
+
+      if (OsUtils.atLeastS()) {
+        if (com.absinthe.libraries.utils.utils.UiUtils.isDarkMode()) {
+          colors.add(context.getColor(android.R.color.system_accent1_700))
+          colors.add(context.getColor(android.R.color.system_accent1_800))
+          colors.add(context.getColor(android.R.color.system_accent1_900))
+        } else {
+          colors.add(context.getColor(android.R.color.system_accent1_200))
+          colors.add(context.getColor(android.R.color.system_accent1_300))
+          colors.add(context.getColor(android.R.color.system_accent1_400))
+        }
+      } else {
+        for (c in ColorTemplate.MATERIAL_COLORS) colors.add(c)
+      }
+
+      chartView.showPieData(entries, colors)
+    }
+  }
+
+  override fun getLabelByXValue(context: Context, x: Int): String {
+    return when (x) {
+      IS_64_BIT -> context.getString(
+        R.string.title_statistics_dialog,
+        context.getString(R.string.string_64_bit)
+      )
+
+      IS_32_BIT -> context.getString(
+        R.string.title_statistics_dialog,
+        context.getString(R.string.string_32_bit)
+      )
+
+      NO_LIBS -> context.getString(R.string.title_statistics_dialog_no_native_libs)
+
+      else -> ""
+    }
+  }
+
+  companion object {
+    const val IS_64_BIT = 0
+    const val IS_32_BIT = 1
+    const val NO_LIBS = 2
+  }
+}

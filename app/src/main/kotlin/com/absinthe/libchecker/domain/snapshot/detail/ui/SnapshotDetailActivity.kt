@@ -1,0 +1,399 @@
+package com.absinthe.libchecker.domain.snapshot.detail.ui
+
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuInflater
+import android.view.MenuItem
+import android.widget.FrameLayout
+import androidx.core.content.FileProvider
+import androidx.core.view.MenuProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.SimpleItemAnimator
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.annotation.ACTIVITY
+import com.absinthe.libchecker.annotation.DEX
+import com.absinthe.libchecker.annotation.LibType
+import com.absinthe.libchecker.annotation.METADATA
+import com.absinthe.libchecker.annotation.NATIVE
+import com.absinthe.libchecker.annotation.PERMISSION
+import com.absinthe.libchecker.annotation.PROVIDER
+import com.absinthe.libchecker.annotation.RECEIVER
+import com.absinthe.libchecker.annotation.SERVICE
+import com.absinthe.libchecker.compat.IntentCompat
+import com.absinthe.libchecker.compat.VersionCompat
+import com.absinthe.libchecker.constant.Constants
+import com.absinthe.libchecker.constant.GlobalValues
+import com.absinthe.libchecker.constant.options.SnapshotOptions
+import com.absinthe.libchecker.databinding.ActivitySnapshotDetailBinding
+import com.absinthe.libchecker.domain.app.detail.ui.dialog.LibDetailDialogFragment
+import com.absinthe.libchecker.domain.snapshot.SnapshotSettingsRepository
+import com.absinthe.libchecker.domain.snapshot.detail.model.SnapshotDetailDiffTextStyle
+import com.absinthe.libchecker.domain.snapshot.detail.model.SnapshotDetailItemDisplayData
+import com.absinthe.libchecker.domain.snapshot.detail.model.SnapshotReportExportTarget
+import com.absinthe.libchecker.domain.snapshot.detail.model.SnapshotTitleDisplayData
+import com.absinthe.libchecker.domain.snapshot.detail.model.buildSnapshotDetailReportHeader
+import com.absinthe.libchecker.domain.snapshot.detail.model.chooseSnapshotReportExportTarget
+import com.absinthe.libchecker.domain.snapshot.detail.ui.adapter.SnapshotDetailAdapter
+import com.absinthe.libchecker.domain.snapshot.detail.ui.adapter.SnapshotDetailRow
+import com.absinthe.libchecker.domain.snapshot.detail.ui.adapter.interactionPolicy
+import com.absinthe.libchecker.domain.snapshot.detail.ui.view.SnapshotEmptyView
+import com.absinthe.libchecker.domain.snapshot.detail.ui.view.SnapshotPackageChangeView
+import com.absinthe.libchecker.domain.snapshot.detail.usecase.BuildSnapshotTitleDisplayDataUseCase
+import com.absinthe.libchecker.domain.snapshot.list.presentation.SnapshotViewModel
+import com.absinthe.libchecker.domain.snapshot.model.SnapshotDiffItem
+import com.absinthe.libchecker.domain.snapshot.model.SnapshotPackageIconSource
+import com.absinthe.libchecker.ui.app.CheckPackageOnResumingActivity
+import com.absinthe.libchecker.utils.Telemetry
+import com.absinthe.libchecker.utils.extensions.applySystemBarsPadding
+import com.absinthe.libchecker.utils.extensions.getColorByAttr
+import com.absinthe.libchecker.utils.extensions.launchDetailPage
+import com.absinthe.libchecker.utils.extensions.launchLibReferencePage
+import com.absinthe.libchecker.utils.extensions.unsafeLazy
+import com.absinthe.libchecker.utils.showToast
+import com.absinthe.libraries.utils.utils.AntiShakeUtils
+import com.google.android.material.R as MaterialR
+import java.io.File
+import kotlin.math.abs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.koin.android.ext.android.inject
+import org.koin.androidx.viewmodel.ext.android.viewModel
+import rikka.core.util.ClipboardUtils
+import timber.log.Timber
+
+const val EXTRA_ENTITY = "EXTRA_ENTITY"
+const val EXTRA_ICON = "EXTRA_ICON"
+
+class SnapshotDetailActivity :
+  CheckPackageOnResumingActivity<ActivitySnapshotDetailBinding>(),
+  MenuProvider {
+
+  override fun inflateBinding(inflater: LayoutInflater) = ActivitySnapshotDetailBinding.inflate(inflater)
+
+  private lateinit var entity: SnapshotDiffItem
+  private lateinit var snapshotTitleDisplayData: SnapshotTitleDisplayData
+
+  private val snapshotSettings: SnapshotSettingsRepository by inject()
+  private val legacyDetail by lazy { snapshotSettings.legacyDetail }
+  private val adapter by lazy {
+    SnapshotDetailAdapter(::showSnapshotDetailLibraryDialog, legacyDetail)
+  }
+  private val viewModel: SnapshotViewModel by viewModel()
+  private val buildSnapshotTitleDisplayData: BuildSnapshotTitleDisplayDataUseCase by inject()
+  private val _entity by unsafeLazy {
+    IntentCompat.getSerializableExtra<SnapshotDiffItem>(
+      intent,
+      EXTRA_ENTITY
+    )
+  }
+  private val _icon by unsafeLazy {
+    IntentCompat.getParcelableExtra<Bitmap>(
+      intent,
+      EXTRA_ICON
+    )
+  }
+
+  override fun requirePackageName() = entity.packageName.takeIf { it.contains("/").not() }
+
+  override fun onApplyContentWindowInsets() {
+    binding.root.applySystemBarsPadding(left = true, top = true, right = true)
+  }
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+
+    if (_entity != null) {
+      entity = _entity!!
+      val diffTextStyle = buildDiffTextStyle()
+      initView(diffTextStyle)
+      lifecycleScope.launch {
+        GlobalValues.ruleLanguage.collectLatest {
+          viewModel.snapshotDetailContentFlow.emit(
+            viewModel.buildDiffDetailContent(
+              entity,
+              if (legacyDetail) {
+                diffTextStyle.copy(
+                  highlightColor = null,
+                  emphasizeDiffs = false,
+                  arrowColor = Color.BLACK,
+                  metricDeltaColor = Color.BLACK
+                )
+              } else {
+                diffTextStyle
+              }
+            )
+          )
+        }
+      }
+    } else {
+      finish()
+    }
+  }
+
+  override fun onCreateMenu(menu: Menu, menuInflater: MenuInflater) {
+    menuInflater.inflate(R.menu.snapshot_detail_menu, menu)
+  }
+
+  override fun onMenuItemSelected(menuItem: MenuItem): Boolean {
+    if (menuItem.itemId == android.R.id.home) {
+      finish()
+    } else if (menuItem.itemId == R.id.report_generate) {
+      generateReport()
+    }
+    return true
+  }
+
+  private fun initView(diffTextStyle: SnapshotDetailDiffTextStyle) {
+    addMenuProvider(this, this, Lifecycle.State.CREATED)
+    setSupportActionBar(binding.toolbar)
+    supportActionBar?.apply {
+      setDisplayHomeAsUpEnabled(true)
+      setDisplayShowHomeEnabled(true)
+      title = null
+    }
+
+    binding.snapshotTitle.useLegacyLayout = legacyDetail
+    binding.apply {
+      collapsingToolbar.also {
+        it.setOnApplyWindowInsetsListener(null)
+        it.isTitleEnabled = false
+      }
+      headerLayout.addOnOffsetChangedListener { appBarLayout, verticalOffset ->
+        val totalScrollRange = appBarLayout.totalScrollRange
+        val collapseFraction = if (totalScrollRange > 0) {
+          abs(verticalOffset).toFloat() / totalScrollRange
+        } else {
+          0f
+        }
+        binding.collapsedToolbarTitle.updateCollapseFraction(collapseFraction)
+        headerLayout.isLifted = totalScrollRange > 0 && abs(verticalOffset) >= totalScrollRange
+      }
+      list.apply {
+        adapter = this@SnapshotDetailActivity.adapter
+        applySystemBarsPadding(bottom = true)
+        (itemAnimator as SimpleItemAnimator).supportsChangeAnimations = false
+      }
+
+      snapshotTitle.apply {
+        bindSnapshotIcon()
+        setIconClickListener {
+          lifecycleScope.launch {
+            val lcItem = viewModel.getAppListItem(entity.packageName) ?: return@launch
+            launchDetailPage(lcItem)
+          }
+        }
+      }
+      snapshotTitleDisplayData = buildSnapshotTitleDisplayData(
+        BuildSnapshotTitleDisplayDataUseCase.Request(
+          item = entity,
+          formatSplitPackageName = true,
+          diffTextStyle = diffTextStyle
+        )
+      )
+      snapshotTitle.render(snapshotTitleDisplayData)
+      binding.collapsedToolbarTitle.bindTitle(snapshotTitleDisplayData.appName)
+    }
+
+    adapter.stateView =
+      when {
+        entity.newInstalled -> SnapshotPackageChangeView(this, R.drawable.ic_yes, R.string.snapshot_detail_new_install_title)
+
+        entity.deleted -> SnapshotPackageChangeView(this, R.drawable.ic_no, R.string.snapshot_detail_deleted_title)
+
+        else -> SnapshotEmptyView(this).apply {
+          layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+          )
+        }
+      }
+    adapter.isStateViewEnable = entity.newInstalled || entity.deleted
+    adapter.setOnItemClickListener { _, view, position ->
+      when (val row = adapter.itemAt(position)) {
+        is SnapshotDetailRow.Header -> {
+          adapter.toggleSectionAt(position)
+          return@setOnItemClickListener
+        }
+
+        is SnapshotDetailRow.Item -> {
+          if (!row.interactionPolicy(entity.packageName).opensDetail) {
+            return@setOnItemClickListener
+          }
+          if (AntiShakeUtils.isInvalidClick(view)) {
+            return@setOnItemClickListener
+          }
+          val item = row.displayData.item
+          lifecycleScope.launch {
+            val lcItem = viewModel.getAppListItem(entity.packageName) ?: return@launch
+            launchDetailPage(
+              item = lcItem,
+              refName = item.name,
+              refType = item.itemType
+            )
+          }
+        }
+
+        null -> return@setOnItemClickListener
+      }
+    }
+    adapter.setOnItemLongClickListener { _, _, position ->
+      when (val row = adapter.itemAt(position)) {
+        is SnapshotDetailRow.Item -> {
+          val policy = row.interactionPolicy(entity.packageName)
+          if (!policy.opensReference) {
+            return@setOnItemLongClickListener false
+          }
+          val item = row.displayData.item
+          launchLibReferencePage(item.name, policy.referenceLabel, item.itemType, null)
+          true
+        }
+
+        else -> false
+      }
+    }
+
+    viewModel.snapshotDetailContentFlow.onEach { content ->
+      content.forEach { section ->
+        recordDetailComponentCount(section.type, section.items.size)
+      }
+      adapter.isStateViewEnable = content.isEmpty()
+      adapter.submitSections(content)
+    }.launchIn(lifecycleScope)
+  }
+
+  private fun buildDiffTextStyle(): SnapshotDetailDiffTextStyle {
+    return SnapshotDetailDiffTextStyle(
+      highlightColor = if ((viewModel.getSnapshotOptions() and SnapshotOptions.DIFF_HIGHLIGHT) > 0) {
+        getColorByAttr(androidx.appcompat.R.attr.colorPrimary)
+      } else {
+        null
+      },
+      emphasizeDiffs = (viewModel.getSnapshotOptions() and SnapshotOptions.DIFF_EMPHASIS) > 0,
+      arrowColor = getColorByAttr(MaterialR.attr.colorOnSurface),
+      metricDeltaColor = getColorByAttr(MaterialR.attr.colorOnSurface)
+    )
+  }
+
+  private fun recordDetailComponentCount(@LibType type: Int, count: Int) {
+    Telemetry.recordEvent(
+      Constants.Event.SNAPSHOT_DETAIL_COMPONENT_COUNT,
+      mapOf(getTelemetryComponentName(type) to count.toLong())
+    )
+  }
+
+  private fun getTelemetryComponentName(@LibType type: Int): String {
+    return when (type) {
+      NATIVE -> "Native"
+      SERVICE -> "Service"
+      ACTIVITY -> "Activity"
+      RECEIVER -> "Receiver"
+      PROVIDER -> "Provider"
+      PERMISSION -> "Permission"
+      METADATA -> "Metadata"
+      DEX -> "Package"
+      else -> "Unknown"
+    }
+  }
+
+  private fun bindSnapshotIcon() {
+    val snapshotIcon = _icon?.takeIf { entity.packageName.contains("/") }
+    if (snapshotIcon != null) {
+      binding.snapshotTitle.setIconImage(snapshotIcon)
+      binding.collapsedToolbarTitle.setIcon(snapshotIcon)
+      return
+    }
+
+    binding.snapshotTitle.setFallbackIcon()
+    binding.collapsedToolbarTitle.setFallbackIcon()
+    lifecycleScope.launch {
+      when (val iconSource = viewModel.getSnapshotPackageIconSources(listOf(entity.packageName))[entity.packageName]) {
+        null -> {
+          binding.snapshotTitle.setFallbackIcon()
+          binding.collapsedToolbarTitle.setFallbackIcon()
+        }
+
+        else -> {
+          binding.snapshotTitle.setIconSource(iconSource)
+          binding.collapsedToolbarTitle.setIcon(
+            (iconSource as? SnapshotPackageIconSource.InstalledPackage)?.packageInfo
+          )
+        }
+      }
+    }
+  }
+
+  private fun generateReport() {
+    val sb = StringBuilder()
+    sb.append(buildSnapshotDetailReportHeader(snapshotTitleDisplayData))
+    sb.appendLine()
+    sb.append(adapter.reportText())
+    val report = sb.toString()
+    when (chooseSnapshotReportExportTarget(report)) {
+      SnapshotReportExportTarget.CLIPBOARD -> {
+        ClipboardUtils.put(this, report)
+        VersionCompat.showCopiedOnClipboardToast(this)
+      }
+
+      SnapshotReportExportTarget.TEXT_FILE -> shareReportFile(report)
+    }
+  }
+
+  private fun shareReportFile(report: String) {
+    lifecycleScope.launch {
+      val reportUriResult = withContext(Dispatchers.IO) {
+        runCatching {
+          val reportDir = File(cacheDir, SNAPSHOT_REPORT_CACHE_DIR).apply {
+            check(exists() || mkdirs()) { "Failed to create snapshot report cache directory" }
+          }
+          val reportFile = File(
+            reportDir,
+            "LibChecker-snapshot-report-${System.currentTimeMillis()}.txt"
+          )
+          reportFile.writeText(report, Charsets.UTF_8)
+          FileProvider.getUriForFile(
+            this@SnapshotDetailActivity,
+            "$packageName.fileprovider",
+            reportFile
+          )
+        }
+      }
+
+      reportUriResult.onSuccess { reportUri ->
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+          type = "text/plain"
+          putExtra(Intent.EXTRA_STREAM, reportUri)
+          addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(shareIntent, getString(R.string.app_info_share)))
+      }.onFailure {
+        Timber.e(it, "Failed to share snapshot report")
+        showToast(R.string.snapshot_report_share_failed)
+      }
+    }
+  }
+
+  private companion object {
+    const val SNAPSHOT_REPORT_CACHE_DIR = "shared_snapshot_reports"
+  }
+}
+
+private fun SnapshotDetailActivity.showSnapshotDetailLibraryDialog(
+  displayData: SnapshotDetailItemDisplayData
+) {
+  val item = displayData.item
+  LibDetailDialogFragment.newInstance(
+    item.name,
+    item.itemType,
+    regexName = displayData.ruleChip?.regexName,
+    enableLibraryInsight = false
+  ).show(supportFragmentManager, LibDetailDialogFragment::class.java.name)
+}

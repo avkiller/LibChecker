@@ -1,0 +1,214 @@
+package com.absinthe.libchecker.domain.snapshot.track.ui
+
+import android.graphics.Color
+import android.os.Bundle
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.Menu
+import android.view.MenuInflater
+import android.view.MenuItem
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Checkable
+import android.widget.FrameLayout
+import androidx.appcompat.widget.SearchView
+import androidx.core.view.MenuProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.constant.GlobalValues
+import com.absinthe.libchecker.databinding.ActivityTrackBinding
+import com.absinthe.libchecker.domain.app.list.GetRandomAppIconUseCase
+import com.absinthe.libchecker.domain.snapshot.track.presentation.TrackListUiState
+import com.absinthe.libchecker.domain.snapshot.track.presentation.TrackViewModel
+import com.absinthe.libchecker.domain.snapshot.track.ui.adapter.TrackAdapter
+import com.absinthe.libchecker.domain.snapshot.track.ui.view.TrackItemView
+import com.absinthe.libchecker.ui.base.BaseActivity
+import com.absinthe.libchecker.utils.OsUtils
+import com.absinthe.libchecker.utils.extensions.applySystemBarsPadding
+import com.absinthe.libchecker.view.app.BlurCoordinatorLayout
+import com.absinthe.libchecker.view.app.DotLoadingView
+import com.absinthe.libchecker.view.app.EmptyListView
+import kotlinx.coroutines.launch
+import me.zhanghai.android.fastscroll.FastScrollerBuilder
+import org.koin.android.ext.android.inject
+import org.koin.androidx.viewmodel.ext.android.viewModel
+import rikka.widget.borderview.BorderView
+
+class TrackActivity :
+  BaseActivity<ActivityTrackBinding>(),
+  SearchView.OnQueryTextListener,
+  MenuProvider {
+
+  override fun inflateBinding(inflater: LayoutInflater) = ActivityTrackBinding.inflate(inflater)
+
+  private val viewModel: TrackViewModel by viewModel()
+  private val getRandomAppIcon: GetRandomAppIconUseCase by inject()
+  private val adapter = TrackAdapter()
+  private var menu: Menu? = null
+  private var isEmptyStateViewReady = false
+  private var blurContainer: BlurCoordinatorLayout? = null
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    initView()
+    observeTrackList()
+    viewModel.loadTrackList()
+  }
+
+  private fun initView() {
+    addMenuProvider(this, this, Lifecycle.State.CREATED)
+    setSupportActionBar(binding.toolbar)
+    installBlurContainer()
+    binding.appbar.setLiftOnScrollTargetView(binding.list)
+    (binding.appbar.parent as ViewGroup).bringChildToFront(binding.appbar)
+    supportActionBar?.setDisplayHomeAsUpEnabled(true)
+    binding.toolbar.title = getString(R.string.album_item_track_title)
+
+    binding.list.apply {
+      adapter = this@TrackActivity.adapter
+      applySystemBarsPadding(top = true, bottom = true)
+      layoutManager = LinearLayoutManager(this@TrackActivity)
+      borderVisibilityChangedListener =
+        BorderView.OnBorderVisibilityChangedListener { top: Boolean, _: Boolean, _: Boolean, _: Boolean ->
+          blurContainer?.setAppbarContentUnderlap(!top)
+          if (blurContainer?.blurEnabled != true) {
+            binding.appbar.isLifted = !top
+          }
+        }
+      FastScrollerBuilder(this).useMd2Style().build()
+    }
+    adapter.apply {
+      fun doSaveItemState(pos: Int, state: Boolean) {
+        val packageName = data[pos].packageName
+        viewModel.setPackageTracked(packageName, state)
+      }
+
+      setOnItemClickListener { _, view, position ->
+        (view as TrackItemView).container.switch.apply {
+          isChecked = !isChecked
+          doSaveItemState(position, isChecked)
+        }
+      }
+      setOnItemChildClickListener { _, view, position ->
+        if (view.id == android.R.id.toggle) {
+          doSaveItemState(position, (view as Checkable).isChecked)
+        }
+      }
+      stateView = DotLoadingView(this@TrackActivity).apply {
+        loadingView.setAppIconHighlightProvider { getRandomAppIcon() }
+      }
+      isStateViewEnable = true
+    }
+  }
+
+  override fun onStart() {
+    super.onStart()
+    blurContainer?.setBlurEnabled(GlobalValues.isBlurDesign)
+  }
+
+  private fun installBlurContainer() {
+    if (!OsUtils.atLeastT()) return
+    val original = binding.container
+    val parent = original.parent as ViewGroup
+    val index = parent.indexOfChild(original)
+    val container = BlurCoordinatorLayout(this, contentViewId = android.R.id.list)
+    container.id = original.id
+    container.layoutParams = original.layoutParams
+    while (original.childCount > 0) {
+      val child = original.getChildAt(0)
+      original.removeViewAt(0)
+      container.addView(child)
+    }
+    parent.removeViewAt(index)
+    parent.addView(container, index)
+    blurContainer = container
+    container.setBlurEnabled(GlobalValues.isBlurDesign)
+  }
+
+  private fun observeTrackList() {
+    lifecycleScope.launch {
+      lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        viewModel.uiState.collect(::renderTrackList)
+      }
+    }
+  }
+
+  private fun renderTrackList(state: TrackListUiState) {
+    if (state.loadFailed) {
+      adapter.stateView = EmptyListView(this).apply {
+        text.setText(R.string.package_list_load_failed)
+        isFocusable = true
+        setOnClickListener { viewModel.loadTrackList() }
+      }
+      return
+    }
+    menu?.findItem(R.id.search)?.isVisible = state.isSearchVisible
+    // Prevent BRVAH from inserting the new rows before removing its state view.
+    val shouldRestoreStateView =
+      adapter.data.isEmpty() && state.items.isNotEmpty() && adapter.isStateViewEnable
+    if (shouldRestoreStateView) {
+      adapter.isStateViewEnable = false
+    }
+    adapter.setDiffNewData(state.items.toMutableList()) {
+      if (!state.isLoading && !isEmptyStateViewReady) {
+        adapter.stateView =
+          EmptyListView(this@TrackActivity).apply {
+            layoutParams = FrameLayout.LayoutParams(
+              FrameLayout.LayoutParams.MATCH_PARENT,
+              FrameLayout.LayoutParams.MATCH_PARENT
+            ).also {
+              it.gravity = Gravity.CENTER
+            }
+          }
+        isEmptyStateViewReady = true
+      }
+      if (shouldRestoreStateView) {
+        adapter.isStateViewEnable = true
+      }
+    }
+  }
+
+  override fun onCreateMenu(menu: Menu, menuInflater: MenuInflater) {
+    menuInflater.inflate(R.menu.common_search_menu, menu)
+    this.menu = menu
+
+    val searchView = SearchView(this).apply {
+      setIconifiedByDefault(false)
+      setOnQueryTextListener(this@TrackActivity)
+      queryHint = getText(R.string.search_hint)
+      isQueryRefinementEnabled = true
+
+      findViewById<View>(androidx.appcompat.R.id.search_plate).apply {
+        setBackgroundColor(Color.TRANSPARENT)
+      }
+    }
+
+    menu.findItem(R.id.search)?.apply {
+      setShowAsAction(MenuItem.SHOW_AS_ACTION_COLLAPSE_ACTION_VIEW or MenuItem.SHOW_AS_ACTION_IF_ROOM)
+      actionView = searchView
+
+      if (!viewModel.uiState.value.isSearchVisible) {
+        isVisible = false
+      }
+    }
+  }
+
+  override fun onMenuItemSelected(menuItem: MenuItem): Boolean {
+    if (menuItem.itemId == android.R.id.home) {
+      onBackPressedDispatcher.onBackPressed()
+    }
+    return true
+  }
+
+  override fun onQueryTextSubmit(query: String?): Boolean {
+    return false
+  }
+
+  override fun onQueryTextChange(newText: String): Boolean {
+    viewModel.setQuery(newText)
+    return false
+  }
+}

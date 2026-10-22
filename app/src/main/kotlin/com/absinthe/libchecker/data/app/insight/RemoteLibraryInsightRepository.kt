@@ -1,0 +1,111 @@
+package com.absinthe.libchecker.data.app.insight
+
+import com.absinthe.libchecker.api.ApiManager
+import com.absinthe.libchecker.api.request.RulesDocumentRequest
+import com.absinthe.libchecker.domain.app.detail.insight.LibraryInsightCatalog
+import com.absinthe.libchecker.domain.app.detail.insight.LibraryInsightDefinition
+import com.absinthe.libchecker.domain.app.detail.insight.LibraryInsightRepository
+import com.absinthe.libchecker.domain.app.detail.insight.RemoteDocumentResult
+import com.absinthe.libchecker.domain.app.detail.insight.isSafeLibraryInsightRemotePath
+import com.absinthe.libchecker.utils.JsonUtil
+import com.squareup.moshi.JsonAdapter
+import com.squareup.moshi.Types
+import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import okhttp3.ResponseBody
+import okio.Buffer
+
+class RemoteLibraryInsightRepository(
+  private val request: RulesDocumentRequest,
+  private val rulesRoots: () -> List<String> = { ApiManager.rulesRootsInPreferenceOrder }
+) : LibraryInsightRepository {
+
+  private val catalogAdapter = JsonUtil.moshi.adapter(LibraryInsightCatalog::class.java)
+  private val definitionAdapter = JsonUtil.moshi.adapter(LibraryInsightDefinition::class.java)
+  private val lookupAdapter: JsonAdapter<Map<String, Any?>> = JsonUtil.moshi.adapter(
+    Types.newParameterizedType(Map::class.java, String::class.java, Any::class.java)
+  )
+  override suspend fun getCatalog(): RemoteDocumentResult<LibraryInsightCatalog> = fetch(CATALOG_PATH, MAX_CATALOG_BYTES, catalogAdapter)
+
+  override suspend fun getDefinition(path: String): RemoteDocumentResult<LibraryInsightDefinition> {
+    if (!isSafePath(path)) return RemoteDocumentResult.Failure
+    return fetch(path, MAX_DEFINITION_BYTES, definitionAdapter)
+  }
+
+  override suspend fun getLookup(path: String): RemoteDocumentResult<Map<String, Any?>> {
+    if (!isSafePath(path)) return RemoteDocumentResult.Failure
+    return fetch(path, MAX_LOOKUP_BYTES, lookupAdapter)
+  }
+
+  private suspend fun <T> fetch(
+    path: String,
+    maxBytes: Long,
+    adapter: JsonAdapter<T>
+  ): RemoteDocumentResult<T> = withContext(Dispatchers.IO) {
+    if (!isSafePath(path)) return@withContext RemoteDocumentResult.Failure
+    var foundFailure = false
+    for (root in rulesRoots()) {
+      val response = try {
+        request.get(root + path)
+      } catch (exception: CancellationException) {
+        throw exception
+      } catch (_: Exception) {
+        foundFailure = true
+        continue
+      }
+      if (!response.isSuccessful) {
+        response.errorBody()?.close()
+        if (response.code() != 404) foundFailure = true
+        continue
+      }
+      val body = response.body()
+      if (body == null) {
+        foundFailure = true
+        continue
+      }
+      if (body.contentLength() > maxBytes) {
+        body.close()
+        return@withContext RemoteDocumentResult.Failure
+      }
+      val bytes = try {
+        body.readAtMost(maxBytes + 1)
+      } catch (exception: CancellationException) {
+        throw exception
+      } catch (_: Exception) {
+        foundFailure = true
+        continue
+      }
+      if (bytes.size > maxBytes) return@withContext RemoteDocumentResult.Failure
+      coroutineContext.ensureActive()
+      val value = runCatching { adapter.fromJson(bytes.decodeToString()) }.getOrNull()
+      if (value != null) return@withContext RemoteDocumentResult.Success(value)
+      foundFailure = true
+    }
+    if (foundFailure) RemoteDocumentResult.Failure else RemoteDocumentResult.NotFound
+  }
+
+  private suspend fun ResponseBody.readAtMost(byteCount: Long): ByteArray = use { body ->
+    val buffer = Buffer()
+    val source = body.source()
+    while (buffer.size < byteCount) {
+      coroutineContext.ensureActive()
+      val readCount = source.read(buffer, byteCount - buffer.size)
+      if (readCount == -1L) break
+    }
+    buffer.readByteArray()
+  }
+
+  private fun isSafePath(path: String): Boolean {
+    return isSafeLibraryInsightRemotePath(path)
+  }
+
+  private companion object {
+    const val CATALOG_PATH = "sdk-details/catalog.json"
+    const val MAX_CATALOG_BYTES = 64L * 1024
+    const val MAX_DEFINITION_BYTES = 128L * 1024
+    const val MAX_LOOKUP_BYTES = 1024L * 1024
+  }
+}

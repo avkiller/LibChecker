@@ -1,23 +1,14 @@
 package com.absinthe.libchecker.integrations.blocker
 
 import android.content.Context
+import android.os.Bundle
 import androidx.core.net.toUri
-import androidx.core.os.bundleOf
-import com.absinthe.libchecker.annotation.ACTIVITY
 import com.absinthe.libchecker.annotation.LibType
-import com.absinthe.libchecker.annotation.PROVIDER
-import com.absinthe.libchecker.annotation.RECEIVER
-import com.absinthe.libchecker.annotation.SERVICE
 import com.absinthe.libchecker.integrations.monkeyking.ShareCmpInfo
 import com.absinthe.libchecker.utils.PackageUtils
 import com.absinthe.libchecker.utils.fromJson
 import com.absinthe.libchecker.utils.showToast
 import com.absinthe.libchecker.utils.toJson
-
-const val TYPE_ACTIVITY = "activity"
-const val TYPE_SERVICE = "service"
-const val TYPE_RECEIVER = "receiver"
-const val TYPE_PROVIDER = "provider"
 
 private const val URI_AUTHORIZATION = "content://com.merxury.blocker.provider.ComponentProvider"
 private const val BLOCKER_APPLICATION_ID = "com.merxury.blocker"
@@ -53,28 +44,20 @@ class BlockerManager {
       packageName,
       listOf(
         ShareCmpInfo.Component(
-          type = getType(type),
+          type = ShareCmpInfo.componentType(type),
           name = fullComponentName,
           block = shouldBlock
         )
       )
     )
-    val bundle = bundleOf(
-      "cmp_list" to shareCmpInfo.toJson()
-    )
+    val bundle = Bundle().apply {
+      putString("cmp_list", shareCmpInfo.toJson())
+    }
     try {
       context.contentResolver.call(URI_AUTHORIZATION.toUri(), "blocks", packageName, bundle)
     } catch (e: Exception) {
       context.showToast(e.message.toString())
     }
-  }
-
-  private fun getType(@LibType type: Int): String = when (type) {
-    ACTIVITY -> TYPE_ACTIVITY
-    SERVICE -> TYPE_SERVICE
-    RECEIVER -> TYPE_RECEIVER
-    PROVIDER -> TYPE_PROVIDER
-    else -> throw IllegalStateException("wrong type")
   }
 
   companion object {

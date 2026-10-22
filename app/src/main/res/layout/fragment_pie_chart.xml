@@ -3,18 +3,8 @@
   xmlns:app="http://schemas.android.com/apk/res-auto"
   android:layout_width="match_parent"
   android:layout_height="match_parent"
-  android:animateLayoutChanges="true"
   android:orientation="vertical"
   android:paddingTop="?actionBarSize">
-
-  <com.google.android.material.progressindicator.LinearProgressIndicator
-    android:id="@+id/progress_horizontal"
-    style="@style/App.Widget.M3E.LinearProgressIndicator.Wavy"
-    android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:max="100"
-    android:visibility="gone"
-    app:hideAnimationBehavior="outward" />
 
   <LinearLayout
     android:id="@+id/dashboard_container"
@@ -22,15 +12,62 @@
     android:layout_height="wrap_content"
     android:orientation="vertical" />
 
-  <com.google.android.flexbox.FlexboxLayout
-    android:id="@+id/features_container"
+  <androidx.constraintlayout.widget.ConstraintLayout
+    android:id="@+id/animated_content_container"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:overScrollMode="never"
-    android:padding="4dp"
-    android:scrollbars="none"
-    app:flexDirection="row"
-    app:flexWrap="wrap"
-    app:justifyContent="flex_start" />
+    android:layout_height="0dp"
+    android:layout_weight="1">
+
+    <com.google.android.flexbox.FlexboxLayout
+      android:id="@+id/features_container"
+      android:layout_width="0dp"
+      android:layout_height="wrap_content"
+      android:overScrollMode="never"
+      android:padding="4dp"
+      android:scrollbars="none"
+      app:flexDirection="row"
+      app:flexWrap="wrap"
+      app:justifyContent="flex_start"
+      app:layout_constraintEnd_toEndOf="parent"
+      app:layout_constraintStart_toStartOf="parent"
+      app:layout_constraintTop_toTopOf="parent" />
+
+    <FrameLayout
+      android:id="@+id/chart_container"
+      android:layout_width="0dp"
+      android:layout_height="0dp"
+      app:layout_constraintBottom_toBottomOf="parent"
+      app:layout_constraintEnd_toEndOf="parent"
+      app:layout_constraintStart_toStartOf="parent"
+      app:layout_constraintTop_toBottomOf="@id/features_container">
+
+      <FrameLayout
+        android:id="@+id/chart_host"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+      <FrameLayout
+        android:id="@+id/loading_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="?attr/colorSurface"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <com.google.android.material.progressindicator.CircularProgressIndicator
+          android:id="@+id/progress_indicator"
+          style="@style/App.Widget.M3E.CircularProgressIndicator"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:layout_gravity="center"
+          android:contentDescription="@string/loading"
+          android:max="100" />
+
+      </FrameLayout>
+
+    </FrameLayout>
+
+  </androidx.constraintlayout.widget.ConstraintLayout>
 
 </LinearLayout>
