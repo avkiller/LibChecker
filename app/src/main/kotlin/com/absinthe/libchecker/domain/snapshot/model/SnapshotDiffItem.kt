@@ -1,0 +1,50 @@
+package com.absinthe.libchecker.domain.snapshot.model
+
+import com.squareup.moshi.JsonClass
+import java.io.Serializable
+
+@JsonClass(generateAdapter = true)
+data class SnapshotDiffItem(
+  val packageName: String,
+  val updateTime: Long,
+  val labelDiff: DiffNode<String>,
+  val versionNameDiff: DiffNode<String>,
+  val versionCodeDiff: DiffNode<Long>,
+  val abiDiff: DiffNode<Short>,
+  val targetApiDiff: DiffNode<Short>,
+  val compileSdkDiff: DiffNode<Short>,
+  val minSdkDiff: DiffNode<Short>,
+  val nativeLibsDiff: DiffNode<String>,
+  val servicesDiff: DiffNode<String>,
+  val activitiesDiff: DiffNode<String>,
+  val receiversDiff: DiffNode<String>,
+  val providersDiff: DiffNode<String>,
+  val permissionsDiff: DiffNode<String>,
+  val metadataDiff: DiffNode<String>,
+  val packageSizeDiff: DiffNode<Long>,
+  val dexInfoDiff: DiffNode<String> = DiffNode(""),
+  val resourcesSizeDiff: DiffNode<Long> = DiffNode(0L),
+  val resourceInfoDiff: DiffNode<String> = DiffNode(""),
+  var added: Int = 0,
+  var removed: Int = 0,
+  var changed: Int = 0,
+  var moved: Int = 0,
+  var newInstalled: Boolean = false,
+  var deleted: Boolean = false,
+  var isTrackItem: Boolean = false,
+  val archivedDiff: DiffNode<Boolean> = DiffNode(false)
+) : Serializable {
+  @JsonClass(generateAdapter = true)
+  data class DiffNode<T>(val old: T, val new: T? = null) : Serializable {
+    private companion object {
+      const val serialVersionUID = 1L
+    }
+  }
+
+  fun isNothingChanged() = added == 0 && removed == 0 && changed == 0 && moved == 0 &&
+    (archivedDiff.new == null || archivedDiff.new == archivedDiff.old)
+
+  private companion object {
+    const val serialVersionUID = 1L
+  }
+}

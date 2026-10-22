@@ -1,16 +1,19 @@
 package com.absinthe.libchecker.database
 
-import androidx.room.Dao
-import androidx.room.Delete
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
-import androidx.room.Query
-import androidx.room.Transaction
-import androidx.room.Update
+import androidx.room3.Dao
+import androidx.room3.Delete
+import androidx.room3.Insert
+import androidx.room3.OnConflictStrategy
+import androidx.room3.Query
+import androidx.room3.Transaction
+import androidx.room3.Update
+import androidx.room3.Upsert
 import com.absinthe.libchecker.database.entity.LCItem
 import com.absinthe.libchecker.database.entity.SnapshotDiffStoringItem
 import com.absinthe.libchecker.database.entity.SnapshotItem
 import com.absinthe.libchecker.database.entity.SnapshotSummaryItem
+import com.absinthe.libchecker.database.entity.SnapshotTimestampCount
+import com.absinthe.libchecker.database.entity.SnapshotUpdatedApp
 import com.absinthe.libchecker.database.entity.TimeStampItem
 import com.absinthe.libchecker.database.entity.TrackItem
 import kotlinx.coroutines.flow.Flow
@@ -28,7 +31,7 @@ interface LCDao {
   @Query("SELECT packageName from item_table WHERE features = -1")
   suspend fun getUninitializedFeaturePackageNames(): List<String>
 
-  @Query("SELECT * from item_table WHERE packageName LIKE :packageName")
+  @Query("SELECT * from item_table WHERE packageName = :packageName")
   suspend fun getItem(packageName: String): LCItem?
 
   @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -40,20 +43,26 @@ interface LCDao {
   @Update
   suspend fun update(item: LCItem)
 
+  @Update
+  suspend fun updateLCItems(items: List<LCItem>)
+
   @Delete
   suspend fun delete(item: LCItem)
 
   @Query("DELETE FROM item_table WHERE packageName = :packageName")
-  fun deleteLCItemByPackageName(packageName: String)
+  suspend fun deleteLCItemByPackageName(packageName: String)
+
+  @Query("DELETE FROM item_table WHERE packageName IN (:packageNames)")
+  suspend fun deleteLCItemsByPackageNames(packageNames: List<String>)
 
   @Query("DELETE FROM item_table")
-  fun deleteAllItems()
+  suspend fun deleteAllItems()
 
   @Query("UPDATE item_table SET features = :features WHERE packageName = :packageName")
-  fun updateFeatures(packageName: String, features: Int)
+  suspend fun updateFeatures(packageName: String, features: Int)
 
   @Transaction
-  fun updateFeatures(map: Map<String, Int>) {
+  suspend fun updateFeatures(map: Map<String, Int>) {
     map.forEach { updateFeatures(it.key, it.value) }
   }
 
@@ -62,29 +71,41 @@ interface LCDao {
   @Query("SELECT * from snapshot_table ORDER BY packageName ASC")
   suspend fun getSnapshots(): List<SnapshotItem>
 
-  @Query("SELECT id, packageName, timeStamp, label, versionName, versionCode, installedTime, lastUpdatedTime, isSystem, abi, targetApi, packageSize, compileSdk, minSdk from snapshot_table ORDER BY packageName ASC")
+  @Query("SELECT id, packageName, timeStamp, label, versionName, versionCode, isArchived, installedTime, lastUpdatedTime, isSystem, abi, targetApi, packageSize, compileSdk, minSdk, dexInfo, resourceInfo, resourcesSize, statsVersion, dexStatsAvailable, resourceStatsAvailable from snapshot_table ORDER BY packageName ASC")
   suspend fun getSnapshotSummaries(): List<SnapshotSummaryItem>
 
   @Transaction
-  @Query("SELECT * from snapshot_table WHERE timeStamp LIKE :timestamp ORDER BY packageName ASC")
+  @Query("SELECT * from snapshot_table WHERE timeStamp = :timestamp ORDER BY packageName ASC")
   suspend fun getSnapshots(timestamp: Long): List<SnapshotItem>
 
-  @Query("SELECT id, packageName, timeStamp, label, versionName, versionCode, installedTime, lastUpdatedTime, isSystem, abi, targetApi, packageSize, compileSdk, minSdk from snapshot_table WHERE timeStamp LIKE :timestamp ORDER BY packageName ASC")
+  @Query("SELECT id, packageName, timeStamp, label, versionName, versionCode, isArchived, installedTime, lastUpdatedTime, isSystem, abi, targetApi, packageSize, compileSdk, minSdk, dexInfo, resourceInfo, resourcesSize, statsVersion, dexStatsAvailable, resourceStatsAvailable from snapshot_table WHERE timeStamp = :timestamp ORDER BY packageName ASC")
   suspend fun getSnapshotSummaries(timestamp: Long): List<SnapshotSummaryItem>
 
-  @Query("SELECT * from snapshot_table WHERE timeStamp LIKE :timestamp AND packageName LIKE :packageName ORDER BY packageName ASC")
+  @Query("SELECT * from snapshot_table WHERE timeStamp = :timestamp AND packageName = :packageName ORDER BY packageName ASC")
   suspend fun getSnapshot(timestamp: Long, packageName: String): SnapshotItem?
 
-  @Query("SELECT id, packageName, timeStamp, label, versionName, versionCode, installedTime, lastUpdatedTime, isSystem, abi, targetApi, packageSize, compileSdk, minSdk from snapshot_table WHERE timeStamp LIKE :timestamp AND packageName LIKE :packageName ORDER BY packageName ASC")
+  @Query("SELECT * FROM snapshot_table WHERE timeStamp = :timestamp AND packageName IN (:packageNames) ORDER BY packageName ASC, id ASC")
+  suspend fun getSnapshots(timestamp: Long, packageNames: List<String>): List<SnapshotItem>
+
+  @Query("SELECT id, packageName, timeStamp, label, versionName, versionCode, isArchived, installedTime, lastUpdatedTime, isSystem, abi, targetApi, packageSize, compileSdk, minSdk, dexInfo, resourceInfo, resourcesSize, statsVersion, dexStatsAvailable, resourceStatsAvailable from snapshot_table WHERE timeStamp = :timestamp AND packageName = :packageName ORDER BY packageName ASC")
   suspend fun getSnapshotSummary(timestamp: Long, packageName: String): SnapshotSummaryItem?
 
-  @Query("SELECT COUNT(*) from snapshot_table WHERE timeStamp LIKE :timestamp")
+  @Query("SELECT COUNT(*) from snapshot_table WHERE timeStamp = :timestamp")
   fun getSnapshotsCountFlow(timestamp: Long): Flow<Int>
 
-  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  @Query("SELECT timeStamp AS timestamp, COUNT(*) AS count FROM snapshot_table GROUP BY timeStamp")
+  suspend fun getSnapshotCountsByTimestamp(): List<SnapshotTimestampCount>
+
+  @Query("SELECT lastUpdatedTime FROM snapshot_table WHERE timeStamp = :timestamp")
+  suspend fun getSnapshotLastUpdatedTimes(timestamp: Long): List<Long>
+
+  @Query("SELECT packageName, label, lastUpdatedTime FROM snapshot_table WHERE timeStamp = :timestamp")
+  suspend fun getSnapshotUpdatedApps(timestamp: Long): List<SnapshotUpdatedApp>
+
+  @Upsert
   suspend fun insert(item: SnapshotItem)
 
-  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  @Upsert
   suspend fun insertSnapshots(items: List<SnapshotItem>)
 
   @Update
@@ -97,35 +118,31 @@ interface LCDao {
   suspend fun delete(item: SnapshotItem)
 
   @Transaction
-  @Query("DELETE FROM snapshot_table WHERE id NOT IN (SELECT id FROM snapshot_table GROUP BY packageName, timeStamp, versionCode, lastUpdatedTime, packageSize)")
+  @Query("DELETE FROM snapshot_table WHERE id NOT IN (SELECT id FROM snapshot_table GROUP BY packageName, timeStamp, versionCode, isArchived, lastUpdatedTime, packageSize)")
   suspend fun deleteDuplicateSnapshotItems()
 
   @Transaction
   @Query("DELETE FROM snapshot_table")
-  fun deleteAllSnapshots()
+  suspend fun deleteAllSnapshots()
 
   @Transaction
   @Query("DELETE FROM snapshot_table WHERE timeStamp = :timestamp")
-  fun deleteSnapshots(timestamp: Long)
-
-  @Transaction
-  @Delete
-  fun deleteSnapshots(list: List<SnapshotItem>)
+  suspend fun deleteSnapshots(timestamp: Long)
 
   // TimeStamp Table
-  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  @Upsert
   suspend fun insert(item: TimeStampItem)
 
   @Query("SELECT * from timestamp_table ORDER BY timestamp DESC")
-  fun getTimeStamps(): List<TimeStampItem>
+  suspend fun getTimeStamps(): List<TimeStampItem>
 
-  @Query("SELECT * from timestamp_table WHERE timeStamp LIKE :timestamp")
+  @Query("SELECT * from timestamp_table WHERE timeStamp = :timestamp")
   suspend fun getTimeStamp(timestamp: Long): TimeStampItem?
 
   @Delete
-  fun delete(item: TimeStampItem)
+  suspend fun delete(item: TimeStampItem)
 
-  @Query("DELETE from timestamp_table WHERE timestamp LIKE :timestamp")
+  @Query("DELETE from timestamp_table WHERE timestamp = :timestamp")
   suspend fun deleteByTimeStamp(timestamp: Long)
 
   @Update
@@ -142,8 +159,11 @@ interface LCDao {
   suspend fun getTrackItems(): List<TrackItem>
 
   // Diff
-  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  @Upsert
   suspend fun insertSnapshotDiff(item: SnapshotDiffStoringItem)
+
+  @Upsert
+  suspend fun insertSnapshotDiffs(items: List<SnapshotDiffStoringItem>)
 
   @Update
   suspend fun updateSnapshotDiff(item: SnapshotDiffStoringItem)
@@ -152,8 +172,11 @@ interface LCDao {
   suspend fun deleteSnapshotDiff(packageName: String)
 
   @Query("DELETE FROM diff_table")
-  fun deleteAllSnapshotDiffItems()
+  suspend fun deleteAllSnapshotDiffItems()
 
-  @Query("SELECT * from diff_table WHERE packageName LIKE :packageName")
+  @Query("SELECT * from diff_table WHERE packageName = :packageName")
   suspend fun getSnapshotDiff(packageName: String): SnapshotDiffStoringItem?
+
+  @Query("SELECT * from diff_table")
+  suspend fun getSnapshotDiffs(): List<SnapshotDiffStoringItem>
 }

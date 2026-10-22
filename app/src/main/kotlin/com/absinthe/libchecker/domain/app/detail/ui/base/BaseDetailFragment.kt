@@ -1,0 +1,478 @@
+package com.absinthe.libchecker.domain.app.detail.ui.base
+
+import android.content.Context
+import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.widget.FrameLayout
+import androidx.annotation.StringRes
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.recyclerview.widget.DividerItemDecoration
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.StaggeredGridLayoutManager
+import androidx.viewbinding.ViewBinding
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.annotation.NATIVE
+import com.absinthe.libchecker.annotation.isComponentType
+import com.absinthe.libchecker.domain.app.detail.action.DetailItemDialogRequest
+import com.absinthe.libchecker.domain.app.detail.action.DetailItemResolver
+import com.absinthe.libchecker.domain.app.detail.model.LibStringAction
+import com.absinthe.libchecker.domain.app.detail.model.LibStringItemChip
+import com.absinthe.libchecker.domain.app.detail.model.LibStringMetadataItemDisplay
+import com.absinthe.libchecker.domain.app.detail.model.LibStringRenderState
+import com.absinthe.libchecker.domain.app.detail.navigation.EXTRA_PACKAGE_NAME
+import com.absinthe.libchecker.domain.app.detail.navigation.EXTRA_TEXT
+import com.absinthe.libchecker.domain.app.detail.presentation.DetailViewModel
+import com.absinthe.libchecker.domain.app.detail.resource.AppResourcePreview
+import com.absinthe.libchecker.domain.app.detail.resource.ResolveAppResourceValueUseCase
+import com.absinthe.libchecker.domain.app.detail.resource.ResolveAppResourceValueUseCase.AppResourceValue
+import com.absinthe.libchecker.domain.app.detail.ui.DetailFragmentManager
+import com.absinthe.libchecker.domain.app.detail.ui.IDetailContainer
+import com.absinthe.libchecker.domain.app.detail.ui.adapter.LibStringAdapter
+import com.absinthe.libchecker.domain.app.detail.ui.dialog.LibDetailDialogFragment
+import com.absinthe.libchecker.domain.app.detail.ui.dialog.PermissionDetailDialogFragment
+import com.absinthe.libchecker.domain.app.detail.ui.dialog.XmlBSDFragment
+import com.absinthe.libchecker.domain.app.repository.AppDetailSettingsRepository
+import com.absinthe.libchecker.domain.app.repository.AppListSettingsRepository
+import com.absinthe.libchecker.ui.base.BaseFragment
+import com.absinthe.libchecker.utils.extensions.addPaddingTop
+import com.absinthe.libchecker.utils.extensions.doOnMainThreadIdle
+import com.absinthe.libchecker.utils.extensions.dp
+import com.absinthe.libchecker.utils.extensions.getColorByAttr
+import com.absinthe.libchecker.utils.extensions.putArguments
+import com.absinthe.libchecker.utils.extensions.unsafeLazy
+import com.absinthe.libchecker.view.app.EmptyListView
+import com.absinthe.libraries.utils.utils.AntiShakeUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.koin.android.ext.android.inject
+import org.koin.androidx.viewmodel.ext.android.activityViewModel
+import timber.log.Timber
+
+/**
+ * <pre>
+ * author : Absinthe
+ * time : 2020/11/27
+ * </pre>
+ */
+
+const val EXTRA_TYPE = "EXTRA_TYPE"
+
+abstract class BaseDetailFragment<T : ViewBinding> : BaseFragment<T>() {
+
+  protected val viewModel: DetailViewModel by activityViewModel()
+  private val appDetailSettingsRepository: AppDetailSettingsRepository by inject()
+  private val appListSettingsRepository: AppListSettingsRepository by inject()
+  private val resolveAppResourceValue: ResolveAppResourceValueUseCase by inject()
+  private val detailItemResolver: DetailItemResolver by inject()
+  protected val packageName by lazy { arguments?.getString(EXTRA_PACKAGE_NAME).orEmpty() }
+  protected val type by lazy { arguments?.getInt(EXTRA_TYPE) ?: NATIVE }
+  private var listRenderState = LibStringRenderState()
+  protected val adapter by lazy {
+    listRenderState = listRenderState.copy(
+      itemDisplayOptions = appListSettingsRepository.itemDisplayOptions,
+      colorfulRuleIcon = appListSettingsRepository.colorfulRuleIcon,
+      processMode = appDetailSettingsRepository.processMode
+    )
+    LibStringAdapter(
+      type = type,
+      onAction = { action ->
+        when (action) {
+          is LibStringAction.MetadataResourceClicked -> onMetadataResourceClick(action.item, action.display)
+        }
+      }
+    ).apply { bind(listRenderState) }
+  }
+  protected val emptyView by unsafeLazy {
+    EmptyListView(requireContext()).apply {
+      layoutParams = FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT
+      ).also {
+        it.gravity = Gravity.CENTER_HORIZONTAL
+      }
+      addPaddingTop(96.dp)
+      text.text = getString(R.string.loading)
+    }
+  }
+  private val dividerItemDecoration by lazy {
+    DividerItemDecoration(
+      requireContext(),
+      DividerItemDecoration.VERTICAL
+    )
+  }
+  private var isListReady = false
+  private var afterListReadyTask: Runnable? = null
+  private val longClickControllerDelegate = unsafeLazy {
+    DetailItemLongClickController(
+      fragment = this,
+      viewModel = viewModel,
+      adapter = adapter,
+      coroutineScope = lifecycleScope,
+      packageName = { packageName },
+      type = { type },
+      detailItemResolver = detailItemResolver
+    )
+  }
+  private val longClickController by longClickControllerDelegate
+
+  abstract fun getRecyclerView(): RecyclerView
+
+  protected abstract val needShowLibDetailDialog: Boolean
+  protected open val autoLoadItems: Boolean = true
+
+  protected abstract suspend fun getItems(): List<LibStringItemChip>
+  protected abstract fun onItemsAvailable(items: List<LibStringItemChip>)
+
+  protected fun initializeList() {
+    getRecyclerView().adapter = adapter
+    adapter.apply {
+      animationEnable = false
+      stateView = this@BaseDetailFragment.emptyView
+      isStateViewEnable = true
+    }
+  }
+
+  protected fun showInitialItems(
+    items: List<LibStringItemChip>,
+    @StringRes emptyMessage: Int = R.string.empty_list,
+    process: String? = null
+  ) {
+    if (items.isEmpty()) {
+      emptyView.text.text = getString(emptyMessage)
+    } else {
+      submitItemsWithFilter(items, viewModel.filterState.queriedText, process)
+    }
+    markListReady(items.size)
+  }
+
+  protected suspend fun <T : Any> StateFlow<T?>.valueOrAwait(): T {
+    return value ?: filterNotNull().first()
+  }
+
+  protected fun markListReady(itemCount: Int) {
+    if (!isListReady) {
+      viewModel.filterState.updateItemsCount(type, itemCount)
+      isListReady = true
+    }
+  }
+
+  override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+    super.onViewCreated(view, savedInstanceState)
+    viewLifecycleOwner.lifecycleScope.launch {
+      viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+        viewModel.itemDisplayOptions.collect { options ->
+          val currentAdapter = adapter
+          listRenderState = listRenderState.copy(itemDisplayOptions = options)
+          currentAdapter.bind(listRenderState, refreshItems = true)
+        }
+      }
+    }
+    if (!autoLoadItems) {
+      return
+    }
+    lifecycleScope.launch {
+      val items = getItems()
+      onItemsAvailable(items)
+    }
+  }
+
+  override fun onAttach(context: Context) {
+    super.onAttach(context)
+    if (context is IDetailContainer) {
+      context.detailFragmentManager.register(type, this)
+    }
+    if (DetailFragmentManager.navType != DetailFragmentManager.NAV_TYPE_NONE) {
+      setupListReadyTask()
+    }
+    adapter.apply {
+      if (needShowLibDetailDialog) {
+        setOnItemClickListener { _, view, position ->
+          if (AntiShakeUtils.isInvalidClick(view)) {
+            return@setOnItemClickListener
+          }
+          openLibDetailDialog(position)
+        }
+      }
+      setOnItemLongClickListener { _, _, position ->
+        longClickController.onLongClick(getItem(position), position)
+        true
+      }
+    }
+  }
+
+  override fun onDetach() {
+    super.onDetach()
+    activity?.let {
+      if (it is IDetailContainer) {
+        (it as IDetailContainer).detailFragmentManager.unregister(type)
+      }
+    }
+  }
+
+  override fun onDestroyView() {
+    if (longClickControllerDelegate.isInitialized()) {
+      longClickController.clear()
+    }
+    super.onDestroyView()
+  }
+
+  override fun onVisibilityChanged(visible: Boolean) {
+    super.onVisibilityChanged(visible)
+    if (visible) {
+      refreshProcessFilterData()
+    }
+  }
+
+  protected fun refreshProcessFilterData() {
+    viewModel.filterState.updateProcessFilterData(
+      viewModel.buildProcessFilterData(
+        type = type,
+        permissionNotGrantedLabel = getString(R.string.permission_not_granted),
+        permissionNotGrantedColor = requireContext().getColorByAttr(androidx.appcompat.R.attr.colorError)
+      )
+    )
+  }
+
+  suspend fun sort() {
+    val list = mutableListOf<LibStringItemChip>().also {
+      it += adapter.data
+    }
+    val highlightPosition = listRenderState.highlightPosition
+    val itemChip =
+      if (highlightPosition != LibStringRenderState.NO_HIGHLIGHT_POSITION && highlightPosition < adapter.data.size) {
+        adapter.data[highlightPosition]
+      } else {
+        null
+      }
+
+    val sortedList = viewModel.sortDetailItemsForDisplay(list, type)
+
+    if (itemChip != null) {
+      updateListRenderState { it.withHighlightPosition(sortedList.indexOf(itemChip)) }
+    }
+
+    adapter.preloadRuleChipIcons(sortedList)
+    withContext(Dispatchers.Main) {
+      adapter.setDiffNewData(sortedList.toMutableList())
+    }
+  }
+
+  protected open suspend fun getFilterList(
+    searchWords: String?,
+    process: String?
+  ): List<LibStringItemChip>? {
+    return viewModel.filterAndSortDetailItems(getItems(), searchWords, process, type)
+  }
+
+  protected fun submitItemsWithFilter(
+    items: List<LibStringItemChip>,
+    searchWords: String?,
+    process: String?
+  ) {
+    lifecycleScope.launch {
+      setItemsWithFilter(items, searchWords, process)
+    }
+  }
+
+  protected suspend fun setItemsWithFilter(
+    items: List<LibStringItemChip>,
+    searchWords: String?,
+    process: String?
+  ) {
+    updateListRenderState { it.copy(highlightText = searchWords.orEmpty()) }
+    updateItemsWithFilterResult(viewModel.filterAndSortDetailItems(items, searchWords, process, type))
+  }
+
+  suspend fun setItemsWithFilter(searchWords: String?, process: String?) {
+    updateListRenderState { it.copy(highlightText = searchWords.orEmpty()) }
+    updateItemsWithFilterResult(getFilterList(searchWords, process))
+  }
+
+  private suspend fun updateItemsWithFilterResult(sortedItems: List<LibStringItemChip>?) {
+    sortedItems?.let {
+      adapter.preloadRuleChipIcons(it)
+      withContext(Dispatchers.Main) {
+        if (isDetached || !isBindingInitialized()) return@withContext
+        if (it.isEmpty()) {
+          if (getRecyclerView().itemDecorationCount > 0) {
+            getRecyclerView().removeItemDecoration(dividerItemDecoration)
+          }
+          emptyView.text.text = getString(R.string.empty_list)
+        } else {
+          if (getRecyclerView().itemDecorationCount == 0) {
+            getRecyclerView().addItemDecoration(dividerItemDecoration)
+          }
+        }
+        // Prevent BRVAH from inserting the new rows before removing its state view.
+        val shouldRestoreStateView = adapter.data.isEmpty() && it.isNotEmpty() && adapter.isStateViewEnable
+        if (shouldRestoreStateView) {
+          adapter.isStateViewEnable = false
+        }
+        adapter.setDiffNewData(it.toMutableList()) {
+          if (shouldRestoreStateView) {
+            adapter.isStateViewEnable = true
+          }
+          afterListReadyTask?.run()
+          viewModel.filterState.updateItemsCount(type, it.size)
+        }
+      }
+    }
+  }
+
+  fun setProcessMode(processMode: Boolean) {
+    if (
+      isComponentType(type) &&
+      updateListRenderState { it.copy(processMode = processMode) }
+    ) {
+      // noinspection NotifyDataSetChanged
+      adapter.notifyDataSetChanged()
+    }
+  }
+
+  protected fun bindProcessColors(processColors: Map<String, Int>) {
+    updateListRenderState { it.copy(processColors = processColors) }
+  }
+
+  fun setupListReadyTask() {
+    if (DetailFragmentManager.navType == type) {
+      DetailFragmentManager.navComponent?.let {
+        afterListReadyTask = Runnable {
+          navigateToComponentImpl(it)
+        }
+      }
+      DetailFragmentManager.resetNavigationParams()
+    }
+  }
+
+  private fun navigateToComponentImpl(component: String) {
+    var componentPosition = adapter.data.indexOfFirst { it.item.name == component }
+    if (componentPosition == -1) {
+      return
+    }
+    if (adapter.hasHeaderLayout()) {
+      componentPosition++
+    }
+
+    Timber.d("navigateToComponent: componentPosition = $componentPosition")
+
+    doOnMainThreadIdle {
+      (activity as? IDetailContainer)?.collapseAppBar()
+      getRecyclerView().scrollToPosition(componentPosition.coerceAtMost(adapter.itemCount - 1))
+
+      // Calculate better offset to provide improved visual experience for highlighting
+      val recyclerView = getRecyclerView()
+      // Place highlighted item about 1/4 from top for better visibility
+      val centerOffset = recyclerView.height / 4
+
+      with(recyclerView.layoutManager) {
+        if (this is LinearLayoutManager) {
+          scrollToPositionWithOffset(componentPosition, centerOffset)
+        } else if (this is StaggeredGridLayoutManager) {
+          scrollToPositionWithOffset(componentPosition, centerOffset)
+        }
+      }
+    }
+
+    updateListRenderState { it.withHighlightPosition(componentPosition) }
+    //noinspection NotifyDataSetChanged
+    adapter.notifyDataSetChanged()
+  }
+
+  private fun openLibDetailDialog(position: Int) {
+    if (position < 0 || position >= adapter.itemCount) {
+      return
+    }
+    when (val request = viewModel.buildDetailItemDialogRequest(adapter.getItem(position), type)) {
+      is DetailItemDialogRequest.Permission -> {
+        PermissionDetailDialogFragment.newInstance(request.permissionName)
+          .show(childFragmentManager, PermissionDetailDialogFragment::class.java.name)
+      }
+
+      is DetailItemDialogRequest.Library -> {
+        LibDetailDialogFragment.newInstance(
+          libName = request.name,
+          type = request.type,
+          regexName = request.regexName,
+          isValidLib = request.isValidLib,
+          enableLibraryInsight = true
+        )
+          .show(childFragmentManager, LibDetailDialogFragment::class.java.name)
+      }
+    }
+  }
+
+  private fun onMetadataResourceClick(
+    item: LibStringItemChip,
+    display: LibStringMetadataItemDisplay
+  ) {
+    if (display.isTransformed) {
+      adapter.setMetadataPreview(item, AppResourcePreview.Original)
+      return
+    }
+    val resource = display.resource ?: return
+
+    viewLifecycleOwner.lifecycleScope.launch {
+      when (
+        val resourceValue = withContext(Dispatchers.IO) {
+          resolveAppResourceValue(
+            ResolveAppResourceValueUseCase.Request(
+              packageName = packageName,
+              resourceId = resource.id,
+              resourceType = resource.type
+            )
+          )
+        }
+      ) {
+        is AppResourceValue.Text -> adapter.setMetadataPreview(
+          item,
+          AppResourcePreview.Text(resourceValue.value)
+        )
+
+        is AppResourceValue.Xml -> showXml(resourceValue.value)
+
+        is AppResourceValue.DrawablePreview -> adapter.setMetadataPreview(
+          item,
+          AppResourcePreview.DrawableValue(resourceValue.drawable)
+        )
+
+        is AppResourceValue.ColorPreview -> adapter.setMetadataPreview(
+          item,
+          AppResourcePreview.ColorValue(resourceValue.color)
+        )
+
+        null -> Unit
+      }
+    }
+  }
+
+  private fun updateListRenderState(
+    transform: (LibStringRenderState) -> LibStringRenderState
+  ): Boolean {
+    val currentAdapter = adapter
+    val state = transform(listRenderState)
+    if (state == listRenderState) {
+      return false
+    }
+    listRenderState = state
+    currentAdapter.bind(state)
+    return true
+  }
+
+  private fun showXml(xml: CharSequence) {
+    XmlBSDFragment()
+      .putArguments(EXTRA_TEXT to xml)
+      .show(childFragmentManager, XmlBSDFragment::class.java.name)
+  }
+
+  fun hasNonGrantedPermissions(): Boolean {
+    return viewModel.hasNonGrantedPermissions(type)
+  }
+}

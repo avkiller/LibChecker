@@ -1,0 +1,84 @@
+package com.absinthe.libchecker.domain.app.detail.ui.view
+
+import android.content.Context
+import android.text.Spannable
+import android.text.SpannableString
+import android.text.style.ImageSpan
+import android.text.style.UnderlineSpan
+import android.view.Gravity
+import androidx.appcompat.widget.AppCompatTextView
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.constant.URLManager
+import com.absinthe.libchecker.domain.app.detail.model.AppPropItem
+import com.absinthe.libchecker.domain.app.detail.ui.adapter.AppPropsAdapter
+import com.absinthe.libchecker.ui.adapter.addSpacingDecoration
+import com.absinthe.libchecker.ui.app.BottomSheetRecyclerView
+import com.absinthe.libchecker.utils.extensions.dp
+import com.absinthe.libchecker.utils.extensions.getDrawable
+import com.absinthe.libchecker.utils.extensions.openUrlInBrowser
+import com.absinthe.libchecker.utils.extensions.paddingBottomCompat
+import com.absinthe.libchecker.view.app.BottomSheetScaffoldView
+import com.absinthe.libchecker.view.span.CenterAlignImageSpan
+
+class AppPropsBottomSheetView(
+  context: Context,
+  onResourceClick: (AppPropItem) -> Unit
+) : BottomSheetScaffoldView(context) {
+
+  private val adapter = AppPropsAdapter(onResourceClick)
+
+  private val tipView = AppCompatTextView(context).apply {
+    layoutParams = LayoutParams(
+      LayoutParams.MATCH_PARENT,
+      LayoutParams.WRAP_CONTENT
+    )
+    gravity = Gravity.CENTER
+    val tip = context.getString(R.string.lib_detail_app_props_tip)
+    contentDescription = tip
+    R.drawable.ic_open_in_new.getDrawable(context)?.let {
+      it.setBounds(0, 0, it.intrinsicWidth, it.intrinsicHeight)
+      val span = CenterAlignImageSpan(it)
+      val spannableString = SpannableString("$tip  ")
+      spannableString.setSpan(span, tip.length, tip.length + 1, ImageSpan.ALIGN_BOTTOM)
+      spannableString.setSpan(UnderlineSpan(), 0, tip.length, Spannable.SPAN_INCLUSIVE_EXCLUSIVE)
+      text = spannableString
+    }
+    setOnClickListener {
+      context.openUrlInBrowser(URLManager.ANDROID_DEV_MANIFEST_APPLICATION)
+    }
+  }
+
+  private val list = BottomSheetRecyclerView(context).apply {
+    configureVerticalList()
+    layoutParams = LayoutParams(
+      LayoutParams.MATCH_PARENT,
+      (resources.displayMetrics.heightPixels * APP_PROPS_LIST_HEIGHT_PERCENTAGE).toInt()
+    ).also {
+      it.topMargin = 24.dp
+    }
+    adapter = this@AppPropsBottomSheetView.adapter
+    setHasFixedSize(true)
+    addSpacingDecoration(4.dp)
+    paddingBottomCompat = 16.dp
+  }
+
+  init {
+    val padding = 16.dp
+    setPadding(padding, padding, padding, 0)
+    header.title.text = context.getString(R.string.lib_detail_app_props_title)
+    addView(tipView)
+    addView(list)
+  }
+
+  fun bind(items: List<AppPropItem>) {
+    adapter.setList(items)
+  }
+
+  fun updateItem(item: AppPropItem) {
+    adapter.replace(item)
+  }
+
+  private companion object {
+    const val APP_PROPS_LIST_HEIGHT_PERCENTAGE = 0.5f
+  }
+}

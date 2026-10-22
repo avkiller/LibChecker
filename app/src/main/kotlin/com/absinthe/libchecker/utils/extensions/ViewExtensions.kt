@@ -1,19 +1,22 @@
 package com.absinthe.libchecker.utils.extensions
 
-import android.animation.Animator
-import android.animation.TimeInterpolator
 import android.animation.ValueAnimator
 import android.content.ClipData
+import android.content.Context
 import android.content.res.Resources
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.graphics.RenderEffect
 import android.graphics.Shader
+import android.graphics.Typeface
 import android.text.Spannable
 import android.text.SpannableString
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.TextUtils
 import android.text.style.ForegroundColorSpan
 import android.text.style.StrikethroughSpan
+import android.view.TouchDelegate
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.AccelerateDecelerateInterpolator
@@ -24,15 +27,10 @@ import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.view.children
 import androidx.core.view.isVisible
-import androidx.viewpager2.widget.ViewPager2
 import com.absinthe.libchecker.BuildConfig
 import com.absinthe.libchecker.compat.VersionCompat
 import com.absinthe.libchecker.constant.Constants
 import com.absinthe.libchecker.utils.OsUtils
-import com.absinthe.libraries.utils.extensions.addPaddingBottom
-import com.absinthe.libraries.utils.extensions.addPaddingEnd
-import com.absinthe.libraries.utils.extensions.addPaddingStart
-import com.absinthe.libraries.utils.extensions.addPaddingTop
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.shape.ShapeAppearanceModel
 import com.google.android.material.shape.SuperEllipseCornerTreatment
@@ -56,10 +54,6 @@ var View.paddingStartCompat: Int
   }
   get() = paddingStart
 
-fun View.addPaddingStart(padding: Int) {
-  addPaddingStart(padding)
-}
-
 var View.paddingTopCompat: Int
   set(value) {
     setPadding(paddingStart, value, paddingEnd, paddingBottom)
@@ -67,17 +61,7 @@ var View.paddingTopCompat: Int
   get() = paddingTop
 
 fun View.addPaddingTop(padding: Int) {
-  addPaddingTop(padding)
-}
-
-var View.paddingEndCompat: Int
-  set(value) {
-    setPadding(paddingStart, paddingTop, value, paddingBottom)
-  }
-  get() = paddingEnd
-
-fun View.addPaddingEnd(padding: Int) {
-  addPaddingEnd(padding)
+  setPadding(paddingStart, paddingTop + padding, paddingEnd, paddingBottom)
 }
 
 var View.paddingBottomCompat: Int
@@ -86,16 +70,10 @@ var View.paddingBottomCompat: Int
   }
   get() = paddingBottom
 
-fun View.addPaddingBottom(padding: Int) {
-  addPaddingBottom(padding)
-}
-
 fun TextView.tintHighlightText(highlightText: String, rawText: CharSequence) {
-  text = rawText
-  if (text.contains(highlightText, true)) {
-    val builder = SpannableStringBuilder()
-    val spannableString = SpannableString(text.toString())
-    val start = text.indexOf(highlightText, 0, true)
+  val start = rawText.indexOf(highlightText, 0, true)
+  if (start >= 0) {
+    val spannableString = SpannableString(rawText)
     val color = context.getColorByAttr(androidx.appcompat.R.attr.colorPrimary)
     spannableString.setSpan(
       ForegroundColorSpan(color),
@@ -103,59 +81,60 @@ fun TextView.tintHighlightText(highlightText: String, rawText: CharSequence) {
       start + highlightText.length,
       Spannable.SPAN_INCLUSIVE_EXCLUSIVE
     )
-    builder.append(spannableString)
-    text = builder
+    text = spannableString
+  } else {
+    text = rawText
+  }
+}
+
+internal fun TextView.setOrHighlightText(text: CharSequence, highlightText: String) {
+  if (highlightText.isNotBlank()) {
+    tintHighlightText(highlightText, text)
+  } else {
+    this.text = text
   }
 }
 
 fun TextView.tintTextToPrimary() {
-  val builder = SpannableStringBuilder()
-  val spannableString = SpannableString(text.toString())
+  val spannableString = SpannableString(text)
   val color = context.getColorByAttr(androidx.appcompat.R.attr.colorPrimary)
   spannableString.setSpan(
     ForegroundColorSpan(color),
     0,
-    text.length,
+    spannableString.length,
     Spannable.SPAN_INCLUSIVE_EXCLUSIVE
   )
-  builder.append(spannableString)
-  text = builder
+  text = spannableString
 }
 
-fun ViewPager2.setCurrentItem(
-  item: Int,
-  duration: Long,
-  interpolator: TimeInterpolator = AccelerateDecelerateInterpolator(),
-  pagePxWidth: Int = width
-) {
-  val pxToDrag: Int = pagePxWidth * (item - currentItem) * (if (isRtl()) -1 else 1)
-  val animator = ValueAnimator.ofInt(0, pxToDrag)
-  var previousValue = 0
-  animator.addUpdateListener { valueAnimator ->
-    val currentValue = valueAnimator.animatedValue as Int
-    val currentPxToDrag = (currentValue - previousValue).toFloat()
-    fakeDragBy(-currentPxToDrag)
-    previousValue = currentValue
-  }
-  animator.addListener(object : Animator.AnimatorListener {
-    override fun onAnimationStart(animation: Animator) {
-      beginFakeDrag()
-    }
-
-    override fun onAnimationEnd(animation: Animator) {
-      endFakeDrag()
-    }
-
-    override fun onAnimationCancel(animation: Animator) {}
-    override fun onAnimationRepeat(animation: Animator) {}
-  })
-  animator.interpolator = interpolator
-  animator.duration = duration
-  animator.start()
+fun TextView.applySingleLineEndEllipsize() {
+  maxLines = 1
+  ellipsize = TextUtils.TruncateAt.END
 }
+
+fun TextView.applyCondensedTypeface() {
+  typeface = Typeface.create(SANS_SERIF_CONDENSED, Typeface.NORMAL)
+}
+
+fun TextView.applyCondensedSingleLine() {
+  applySingleLineEndEllipsize()
+  applyCondensedTypeface()
+  letterSpacing = 0f
+}
+
+private const val SANS_SERIF_CONDENSED = "sans-serif-condensed"
 
 fun ViewGroup.setAlphaForAll(alpha: Float) = children.forEach {
   it.alpha = alpha
+}
+
+internal fun ViewGroup.setSingleChild(child: View) {
+  if (childCount == 1 && getChildAt(0) === child) {
+    return
+  }
+  (child.parent as? ViewGroup)?.removeView(child)
+  removeAllViews()
+  addView(child)
 }
 
 fun TextView.startStrikeThroughAnimation(): ValueAnimator {
@@ -190,7 +169,11 @@ fun TextView.reverseStrikeThroughAnimation(): ValueAnimator {
 
 fun ImageView.copyToClipboard() {
   val bitmap = runCatching { drawable.toBitmap() }.getOrNull() ?: return
-  val iconFile = File(context.requireAvailableCacheDir(), Constants.TEMP_ICON)
+  context.copyBitmapToClipboard(bitmap)
+}
+
+fun Context.copyBitmapToClipboard(bitmap: Bitmap) {
+  val iconFile = File(requireAvailableCacheDir(), Constants.TEMP_ICON)
   if (!iconFile.exists()) {
     iconFile.createNewFile()
   }
@@ -198,16 +181,16 @@ fun ImageView.copyToClipboard() {
     bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
   }
   val uri = FileProvider.getUriForFile(
-    context,
+    this,
     BuildConfig.APPLICATION_ID + ".fileprovider",
     iconFile
   )
   if (ClipboardUtils.put(
-      context,
-      ClipData.newUri(context.contentResolver, Constants.TEMP_ICON, uri)
+      this,
+      ClipData.newUri(contentResolver, Constants.TEMP_ICON, uri)
     )
   ) {
-    VersionCompat.showCopiedOnClipboardToast(context)
+    VersionCompat.showCopiedOnClipboardToast(this)
   }
 }
 
@@ -221,28 +204,23 @@ fun View.isRtl(): Boolean {
   return layoutDirection == View.LAYOUT_DIRECTION_RTL
 }
 
-val View.start: Int
-  get() {
-    return if (isRtl()) {
-      right
-    } else {
-      left
-    }
-  }
-
-val View.end: Int
-  get() {
-    return if (isRtl()) {
-      left
-    } else {
-      right
-    }
-  }
-
 fun View?.visibleWidth() = if (this != null && isVisible) measuredWidth else 0
 fun View?.visibleHeight() = if (this != null && isVisible) measuredHeight else 0
 
-fun View.animatedBlurAction(action: () -> Unit) {
+/**
+ * Expands [target]'s touch area to at least [minSize] on both dimensions by
+ * installing a [TouchDelegate] on this parent. Call from [ViewGroup.onLayout]
+ * after the target has been laid out, and only while the target is visible.
+ */
+fun ViewGroup.expandChildTouchTarget(target: View, minSize: Int) {
+  val bounds = Rect().also(target::getHitRect)
+  val horizontalExpansion = ((minSize - bounds.width()) / 2).coerceAtLeast(0)
+  val verticalExpansion = ((minSize - bounds.height()) / 2).coerceAtLeast(0)
+  bounds.inset(-horizontalExpansion, -verticalExpansion)
+  touchDelegate = TouchDelegate(bounds, target)
+}
+
+fun View.animatedBlurAction(action: () -> Unit): ValueAnimator {
   var hasActed = false
   var supportBlur = OsUtils.atLeastS()
   val animator = ValueAnimator.ofFloat(0f, 16f).apply {
@@ -277,6 +255,7 @@ fun View.animatedBlurAction(action: () -> Unit) {
     }
   }
   animator.start()
+  return animator
 }
 
 fun MaterialCardView.setSmoothRoundCorner(radius: Int) {

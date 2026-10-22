@@ -4,14 +4,16 @@
   xmlns:tools="http://schemas.android.com/tools"
   android:layout_width="match_parent"
   android:layout_height="match_parent"
-  tools:context=".features.snapshot.detail.ui.SnapshotDetailActivity">
+  tools:context=".domain.snapshot.detail.ui.SnapshotDetailActivity">
 
   <com.google.android.material.appbar.AppBarLayout
     android:id="@+id/header_layout"
     style="?attr/appBarLayoutStyle"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="?attr/colorSurface">
+    android:background="?attr/colorSurface"
+    app:liftOnScroll="false"
+    app:liftOnScrollColor="?attr/colorSurface">
 
     <com.google.android.material.appbar.CollapsingToolbarLayout
       android:id="@+id/collapsing_toolbar"
@@ -19,17 +21,16 @@
       android:layout_width="match_parent"
       android:layout_height="match_parent"
       android:background="@null"
-      app:contentScrim="?attr/colorSurfaceContainer"
+      app:contentScrim="?attr/colorSurface"
       app:expandedTitleTextAppearance="?attr/textAppearanceHeadlineMedium"
       app:layout_scrollFlags="scroll|exitUntilCollapsed">
 
-      <com.absinthe.libchecker.features.snapshot.detail.ui.view.SnapshotTitleView
+      <com.absinthe.libchecker.domain.snapshot.detail.ui.view.SnapshotTitleView
         android:id="@+id/snapshot_title"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:paddingHorizontal="@dimen/normal_padding"
         android:paddingTop="?attr/actionBarSize"
-        android:paddingBottom="@dimen/normal_padding"
         app:layout_collapseMode="parallax" />
 
       <androidx.appcompat.widget.ToolbarFix
@@ -37,27 +38,29 @@
         style="?actionBarStyle"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        app:layout_collapseMode="pin" />
+        app:layout_collapseMode="pin">
+
+        <com.absinthe.libchecker.view.CollapsedToolbarView
+          android:id="@+id/collapsed_toolbar_title"
+          android:layout_width="wrap_content"
+          android:layout_height="match_parent"
+          android:layout_gravity="start|center_vertical" />
+
+      </androidx.appcompat.widget.ToolbarFix>
 
     </com.google.android.material.appbar.CollapsingToolbarLayout>
 
   </com.google.android.material.appbar.AppBarLayout>
 
-  <LinearLayout
+  <rikka.widget.borderview.BorderRecyclerView
+    android:id="@android:id/list"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    app:layout_behavior="com.google.android.material.appbar.AppBarLayout$ScrollingViewBehavior">
-
-    <rikka.widget.borderview.BorderRecyclerView
-      android:id="@android:id/list"
-      android:layout_width="match_parent"
-      android:layout_height="match_parent"
-      android:clipToPadding="false"
-      android:overScrollMode="never"
-      android:padding="@dimen/normal_padding"
-      app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
-
-  </LinearLayout>
+    android:background="?attr/colorSurface"
+    android:clipToPadding="false"
+    android:overScrollMode="never"
+    android:paddingBottom="@dimen/normal_padding"
+    app:layout_behavior="@string/appbar_scrolling_view_behavior"
+    app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

@@ -2,25 +2,26 @@
 <resources>
   <string name="app_name" translatable="false">LibChecker</string>
   <string name="apk" translatable="false">APK</string>
+  <string name="url" translatable="false">URL</string>
   <string name="app_bundle" translatable="false">App Bundles</string>
   <string name="abi_string" translatable="false">ABI</string>
   <string name="kotlin_string" translatable="false">Kotlin</string>
   <string name="target_sdk_string" translatable="false">Target SDK</string>
   <string name="min_sdk_string" translatable="false">Min SDK</string>
   <string name="compile_sdk_string" translatable="false">Compile SDK</string>
+  <string name="snapshot_detail_sdk_label" translatable="false">SDK</string>
   <string name="agp" translatable="false">Android Gradle Plugin</string>
   <string name="pwa" translatable="false">Progressive Web Apps</string>
   <string name="jetpack_compose" translatable="false">Jetpack Compose</string>
   <string name="jetpack_compose_short" translatable="false">Compose</string>
-  <string name="jetbrain_kmp" translatable="false">Compose Multiplatform</string>
-  <string name="jetbrain_kmp_short" translatable="false">KMP</string>
-  <string name="rxjava" translatable="false">RxJava</string>
-  <string name="rxkotlin" translatable="false">RxKotlin</string>
-  <string name="rxandroid" translatable="false">RxAndroid</string>
+  <string name="compose_multiplatform_resources" translatable="false">Compose Multiplatform Resources</string>
 
-  <string name="empty" translatable="false"> </string>
+  <string name="lib_reference_demo_example_suffix" translatable="false">(Example)</string>
 
-  <string name="ref_category_dex" translatable="false">Dex</string>
+  <plurals name="snapshot_dex_classes_count" translatable="false">
+    <item quantity="one">%s class</item>
+    <item quantity="other">%s classes</item>
+  </plurals>
 
   <string name="snapshot_none" translatable="false">None</string>
 </resources>

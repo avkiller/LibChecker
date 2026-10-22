@@ -2,25 +2,26 @@ package com.absinthe.libchecker.view.app
 
 import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.Color
 import android.graphics.RenderEffect
 import android.graphics.Shader
+import android.graphics.drawable.AdaptiveIconDrawable
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.util.AttributeSet
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
-import androidx.annotation.DrawableRes
 import androidx.annotation.MainThread
 import androidx.appcompat.widget.AppCompatImageView
-import androidx.core.content.ContextCompat
 import androidx.core.content.res.use
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.isVisible
 import com.absinthe.libchecker.R
+import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.extensions.dpToDimension
 import com.absinthe.libchecker.utils.extensions.dpToDimensionPixelSize
 import com.absinthe.libchecker.utils.extensions.getColorByAttr
@@ -213,29 +214,6 @@ class IconCarouselView @JvmOverloads constructor(
   }
 
   @MainThread
-  fun setIconResources(@DrawableRes vararg iconResIds: Int) {
-    val drawables = iconResIds.map { resId ->
-      ContextCompat.getDrawable(context, resId)
-    }.filterNotNull()
-    setIconDrawables(drawables)
-  }
-
-  @MainThread
-  fun setReverse(value: Boolean) {
-    if (reverse == value) return
-    reverse = value
-    updateIconTransforms()
-  }
-
-  @MainThread
-  fun setStepDuration(durationMs: Long) {
-    val safeDuration = durationMs.coerceAtLeast(300L)
-    if (stepDuration == safeDuration) return
-    stepDuration = safeDuration
-    recreateAnimatorIfNeeded()
-  }
-
-  @MainThread
   fun start() {
     if (shouldRun && animator?.isStarted == true) return
     shouldRun = true
@@ -282,14 +260,6 @@ class IconCarouselView @JvmOverloads constructor(
       cancel()
     }
     animator = null
-  }
-
-  private fun recreateAnimatorIfNeeded() {
-    val wasRunning = animator?.isStarted == true
-    stopAnimator()
-    if (wasRunning && shouldRun && isAttachedToWindow) {
-      startAnimator()
-    }
   }
 
   private fun updateIconTransforms() {
@@ -382,11 +352,7 @@ class IconCarouselView @JvmOverloads constructor(
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         clipToOutline = true
         elevation = context.dpToDimension(3)
-        background = GradientDrawable().apply {
-          shape = GradientDrawable.RECTANGLE
-          cornerRadius = context.dpToDimension(14)
-          setColor(tileColor)
-        }
+        background = createTileBackground(context, tileColor)
       }
 
       imageView.scaleType = ImageView.ScaleType.CENTER_INSIDE
@@ -410,7 +376,7 @@ class IconCarouselView @JvmOverloads constructor(
     }
 
     fun setBlurRadius(radius: Float) {
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+      if (!OsUtils.atLeastS()) return
 
       val bucket = (radius.coerceAtLeast(0f) * 2f).roundToInt()
       if (blurBucket == bucket) return
@@ -424,6 +390,21 @@ class IconCarouselView @JvmOverloads constructor(
           RenderEffect.createBlurEffect(blurRadius, blurRadius, Shader.TileMode.DECAL)
         }
       )
+    }
+  }
+}
+
+private fun createTileBackground(context: Context, tileColor: Int): Drawable {
+  return if (OsUtils.atLeastO()) {
+    AdaptiveIconDrawable(
+      ColorDrawable(tileColor),
+      ColorDrawable(Color.TRANSPARENT)
+    )
+  } else {
+    GradientDrawable().apply {
+      shape = GradientDrawable.RECTANGLE
+      cornerRadius = context.dpToDimension(14)
+      setColor(tileColor)
     }
   }
 }

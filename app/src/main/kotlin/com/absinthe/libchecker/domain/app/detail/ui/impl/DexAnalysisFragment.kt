@@ -1,0 +1,59 @@
+package com.absinthe.libchecker.domain.app.detail.ui.impl
+
+import android.view.LayoutInflater
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.annotation.DEX
+import com.absinthe.libchecker.compat.VersionCompat
+import com.absinthe.libchecker.databinding.FragmentLibComponentBinding
+import com.absinthe.libchecker.domain.app.detail.model.LibStringItemChip
+import com.absinthe.libchecker.domain.app.detail.navigation.EXTRA_PACKAGE_NAME
+import com.absinthe.libchecker.domain.app.detail.ui.base.BaseDetailFragment
+import com.absinthe.libchecker.domain.app.detail.ui.base.EXTRA_TYPE
+import com.absinthe.libchecker.utils.extensions.putArguments
+import rikka.core.util.ClipboardUtils
+
+class DexAnalysisFragment : BaseDetailFragment<FragmentLibComponentBinding>() {
+
+  override fun inflateBinding(inflater: LayoutInflater) = FragmentLibComponentBinding.inflate(inflater)
+
+  override fun getRecyclerView() = binding.list
+  override val needShowLibDetailDialog = false
+
+  override suspend fun getItems(): List<LibStringItemChip> {
+    return viewModel.contentState.dexLibItems.valueOrAwait()
+  }
+
+  override fun onItemsAvailable(items: List<LibStringItemChip>) {
+    showInitialItems(items, emptyMessage = R.string.uncharted_territory)
+  }
+
+  override fun init() {
+    initializeList()
+
+    adapter.apply {
+      setOnItemLongClickListener { _, _, position ->
+        ClipboardUtils.put(requireContext(), getItem(position).item.name)
+        VersionCompat.showCopiedOnClipboardToast(context)
+        true
+      }
+    }
+
+    if (viewModel.packageInfoStateFlow.value != null && viewModel.contentState.dexLibItems.value == null) {
+      viewModel.initDexData()
+    }
+  }
+
+  override fun onDetach() {
+    super.onDetach()
+    viewModel.cancelInitDexDataJob()
+  }
+
+  companion object {
+    fun newInstance(packageName: String): DexAnalysisFragment {
+      return DexAnalysisFragment().putArguments(
+        EXTRA_PACKAGE_NAME to packageName,
+        EXTRA_TYPE to DEX
+      )
+    }
+  }
+}

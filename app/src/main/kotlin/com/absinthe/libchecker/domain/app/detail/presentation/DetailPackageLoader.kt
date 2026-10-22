@@ -1,0 +1,55 @@
+package com.absinthe.libchecker.domain.app.detail.presentation
+
+import android.content.pm.PackageInfo
+import android.net.Uri
+import com.absinthe.libchecker.domain.app.detail.packageinfo.GetAppDetailPackageUseCase
+import com.absinthe.libchecker.domain.app.packageinfo.GetInstalledAppComparisonPackageUseCase
+import com.absinthe.libchecker.domain.app.packageinfo.PrepareApkAnalysisPackageUseCase
+import com.absinthe.libchecker.domain.snapshot.comparison.usecase.BuildPackageComparisonSnapshotItemUseCase
+import com.absinthe.libchecker.domain.snapshot.model.SnapshotDiffItem
+import com.absinthe.libchecker.utils.apk.ApkPreview
+import com.absinthe.libchecker.utils.apk.ApkPreviewInfo
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+class DetailPackageLoader(
+  private val getAppDetailPackage: GetAppDetailPackageUseCase,
+  private val prepareApkAnalysisPackageUseCase: PrepareApkAnalysisPackageUseCase,
+  private val getInstalledAppComparisonPackageUseCase: GetInstalledAppComparisonPackageUseCase,
+  private val buildPackageComparisonSnapshotItemUseCase: BuildPackageComparisonSnapshotItemUseCase
+) {
+  val packageState = DetailPackageState()
+
+  suspend fun loadAppDetailPackage(packageName: String): GetAppDetailPackageUseCase.Result {
+    return getAppDetailPackage(packageName)
+  }
+
+  suspend fun getApkPreviewInfo(url: String): Result<ApkPreviewInfo> {
+    return withContext(Dispatchers.IO) {
+      ApkPreview(url).parse()
+    }
+  }
+
+  suspend fun prepareApkAnalysisPackage(
+    cacheDir: File,
+    uri: Uri
+  ): PrepareApkAnalysisPackageUseCase.Result {
+    return prepareApkAnalysisPackageUseCase(cacheDir, uri)
+  }
+
+  suspend fun isInstalledAppComparisonAvailable(packageName: String): Boolean {
+    return getInstalledAppComparisonPackageUseCase.isAvailable(packageName)
+  }
+
+  suspend fun loadInstalledAppComparisonPackage(packageName: String): PackageInfo? {
+    return getInstalledAppComparisonPackageUseCase(packageName)
+  }
+
+  suspend fun buildPackageComparisonSnapshotItem(
+    basePackage: PackageInfo,
+    analysisPackage: PackageInfo
+  ): SnapshotDiffItem {
+    return buildPackageComparisonSnapshotItemUseCase(basePackage, analysisPackage)
+  }
+}

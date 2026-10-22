@@ -1,0 +1,25 @@
+package com.absinthe.libchecker.domain.statistics.chart.source
+
+import android.view.View
+import com.absinthe.libchecker.database.entity.LCItem
+import com.absinthe.libchecker.domain.statistics.chart.model.ChartSourceItem
+
+abstract class BaseChartDataSource<T : View>(val items: List<LCItem>) : IChartDataSource<T> {
+  protected abstract val classifiedMap: Map<Int, ChartSourceItem>
+
+  override fun getListByXValue(x: Int): List<LCItem> {
+    return classifiedMap[x]?.data.orEmpty()
+  }
+
+  override fun getData(): List<LCItem> {
+    return items
+  }
+
+  override fun getItemChipsByXValue(x: Int): Map<String, List<String>> {
+    return classifiedMap[x]?.itemChips.orEmpty()
+  }
+
+  fun getChartSourceItems(): Map<Int, ChartSourceItem> {
+    return classifiedMap
+  }
+}

@@ -12,11 +12,17 @@ gradlePlugin {
       id = "res-opt"
       implementationClass = "ResoptPlugin"
     }
+    create("market-stable-manifest") {
+      id = "market-stable-manifest"
+      implementationClass = "MarketStableManifestPlugin"
+    }
   }
 }
 
 dependencies {
   implementation(libs.gradlePlugin.android)
+  implementation(libs.gradlePlugin.aapt2Proto)
+  implementation(libs.gradlePlugin.protobuf)
   implementation(libs.gradlePlugin.kotlin)
   implementation(libs.gradlePlugin.spotless)
 }

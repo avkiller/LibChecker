@@ -1,0 +1,57 @@
+package com.absinthe.libchecker.domain.app.detail.ui.impl
+
+import android.view.LayoutInflater
+import androidx.recyclerview.widget.RecyclerView
+import com.absinthe.libchecker.annotation.LibType
+import com.absinthe.libchecker.databinding.FragmentLibComponentBinding
+import com.absinthe.libchecker.domain.app.detail.model.LibStringItemChip
+import com.absinthe.libchecker.domain.app.detail.navigation.EXTRA_PACKAGE_NAME
+import com.absinthe.libchecker.domain.app.detail.ui.Referable
+import com.absinthe.libchecker.domain.app.detail.ui.base.BaseDetailFragment
+import com.absinthe.libchecker.domain.app.detail.ui.base.EXTRA_TYPE
+import com.absinthe.libchecker.utils.extensions.putArguments
+
+class ComponentsAnalysisFragment :
+  BaseDetailFragment<FragmentLibComponentBinding>(),
+  Referable {
+
+  override fun inflateBinding(inflater: LayoutInflater) = FragmentLibComponentBinding.inflate(inflater)
+
+  override val needShowLibDetailDialog: Boolean = true
+
+  override fun getRecyclerView(): RecyclerView = binding.list
+
+  override suspend fun getItems(): List<LibStringItemChip> {
+    return viewModel.contentState.componentsMap[type].valueOrAwait()
+  }
+
+  override fun onItemsAvailable(items: List<LibStringItemChip>) {
+    if (isFragmentVisible()) {
+      refreshProcessFilterData()
+    }
+    if (items.isNotEmpty()) {
+      bindProcessColors(viewModel.contentState.processesMap)
+    }
+    showInitialItems(items, process = viewModel.filterState.queriedProcess)
+  }
+
+  override fun init() {
+    initializeList()
+  }
+
+  override fun onVisibilityChanged(visible: Boolean) {
+    super.onVisibilityChanged(visible)
+    if (visible && viewModel.contentState.componentsMap[type]?.value == null && viewModel.packageInfoStateFlow.value != null) {
+      viewModel.initComponentsData()
+    }
+  }
+
+  companion object {
+    fun newInstance(packageName: String, @LibType type: Int): ComponentsAnalysisFragment {
+      return ComponentsAnalysisFragment().putArguments(
+        EXTRA_PACKAGE_NAME to packageName,
+        EXTRA_TYPE to type
+      )
+    }
+  }
+}

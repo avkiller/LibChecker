@@ -2,7 +2,6 @@ package com.absinthe.libchecker.utils
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.ApplicationInfoHidden
 import android.content.pm.ComponentInfo
@@ -12,6 +11,7 @@ import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.os.Build
 import android.os.Process
+import android.os.Trace
 import androidx.annotation.DrawableRes
 import androidx.annotation.RequiresApi
 import androidx.core.text.buildSpannedString
@@ -33,6 +33,7 @@ import com.absinthe.libchecker.annotation.PROVIDER
 import com.absinthe.libchecker.annotation.RECEIVER
 import com.absinthe.libchecker.annotation.SERVICE
 import com.absinthe.libchecker.app.SystemServices
+import com.absinthe.libchecker.compat.IZipFile
 import com.absinthe.libchecker.compat.PackageManagerCompat
 import com.absinthe.libchecker.compat.ZipFileCompat
 import com.absinthe.libchecker.constant.AndroidVersions
@@ -52,16 +53,15 @@ import com.absinthe.libchecker.constant.Constants.X86
 import com.absinthe.libchecker.constant.Constants.X86_64
 import com.absinthe.libchecker.constant.GlobalValues
 import com.absinthe.libchecker.constant.options.AdvancedOptions
-import com.absinthe.libchecker.data.app.LocalAppDataSource
-import com.absinthe.libchecker.features.applist.detail.bean.StatefulComponent
-import com.absinthe.libchecker.features.statistics.bean.LibStringItem
-import com.absinthe.libchecker.utils.dex.FastDexFileFactory
+import com.absinthe.libchecker.domain.app.detail.model.LibStringItem
+import com.absinthe.libchecker.domain.app.detail.model.StatefulComponent
+import com.absinthe.libchecker.utils.apk.ZipDataOffsetReader
+import com.absinthe.libchecker.utils.dex.StreamingDexClassScanner
 import com.absinthe.libchecker.utils.elf.ElfInfo
 import com.absinthe.libchecker.utils.elf.ElfParser
 import com.absinthe.libchecker.utils.extensions.ABI_64_BIT
 import com.absinthe.libchecker.utils.extensions.ABI_STRING_MAP
 import com.absinthe.libchecker.utils.extensions.ABI_STRING_RES_MAP
-import com.absinthe.libchecker.utils.extensions.ABI_VALUE_TO_INSTRUCTION_SET_MAP
 import com.absinthe.libchecker.utils.extensions.INSTRUCTION_SET_MAP_TO_ABI_VALUE
 import com.absinthe.libchecker.utils.extensions.PAGE_SIZE_16_KB
 import com.absinthe.libchecker.utils.extensions.STRING_ABI_MAP
@@ -81,7 +81,6 @@ import com.absinthe.libchecker.utils.extensions.toClassDefType
 import com.absinthe.libchecker.utils.extensions.toHexString
 import com.absinthe.libchecker.utils.manifest.StaticLibraryReader
 import com.absinthe.libraries.utils.manager.TimeRecorder
-import com.android.tools.smali.dexlib2.Opcodes
 import dev.rikka.tools.refine.Refine
 import java.io.File
 import java.security.interfaces.DSAPublicKey
@@ -89,8 +88,7 @@ import java.security.interfaces.RSAPublicKey
 import java.text.DateFormat
 import java.util.zip.ZipEntry
 import javax.security.cert.X509Certificate
-import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
-import org.apache.commons.compress.archivers.zip.ZipFile
+import kotlinx.coroutines.CancellationException
 import timber.log.Timber
 
 object PackageUtils {
@@ -156,44 +154,29 @@ object PackageUtils {
   }
 
   /**
-   * Get version string of an app ( 1.0.0(1) )
-   * @param versionName Version name
-   * @param versionCode Version code
-   * @return version code as String
-   */
-  fun getVersionString(versionName: String, versionCode: Long): String {
-    return "$versionName ($versionCode)"
-  }
-
-  /**
    * Get native libraries of an app
    * @param packageInfo PackageInfo
    * @param specifiedAbi Specify an ABI
    * @return List of LibStringItem
    */
-  fun getNativeDirLibs(packageInfo: PackageInfo, specifiedAbi: Int? = null, parseElf: Boolean = false): List<LibStringItem> {
+  fun getNativeDirLibs(packageInfo: PackageInfo, specifiedAbi: Int? = null, parseElf: Boolean = false, checkCancelled: () -> Unit = {}): List<LibStringItem> {
+    checkCancelled()
     val nativePath = packageInfo.applicationInfo?.nativeLibraryDir
     val result = mutableListOf<LibStringItem>()
 
     if (nativePath != null) {
       File(nativePath).listFiles()?.let { files ->
         val libs = files.asSequence()
-          .filter { it.isFile && it.extension == "so" }
+          .filter {
+            checkCancelled()
+            it.isFile && it.name.endsWith(".so")
+          }
           .distinctBy { it.name }
           .map {
-            val elfParser = runCatching {
-              ElfParser(it).use { parser ->
-                parser.parseHeader()
-                parser
-              }
-            }.getOrNull()
             LibStringItem(
               name = it.name,
               size = FileUtils.getFileSize(it),
-              elfInfo = ElfInfo(
-                elfParser?.getEType() ?: ET_NOT_ELF,
-                elfParser?.getMinPageSize() ?: -1
-              ),
+              elfInfo = parseNativeDirElfInfo(it, parseElf, checkCancelled),
               source = it.path
             )
           }
@@ -202,6 +185,9 @@ object PackageUtils {
     }
 
     if (result.isEmpty()) {
+      if (specifiedAbi == null && !parseElf) {
+        return getDefaultAbiNativeLibs(packageInfo, checkCancelled).distinctBy { it.name }
+      }
       val abi =
         specifiedAbi ?: runCatching { getAbi(packageInfo) }.getOrNull() ?: return emptyList()
 
@@ -213,12 +199,66 @@ object PackageUtils {
         packageInfo = packageInfo,
         specifiedAbi = abi,
         includeNativeLibsDir = false,
-        parseElf = parseElf
+        parseElf = parseElf,
+        checkCancelled = checkCancelled
       )[sourceDir] ?: emptyList()
       result.addAll(libs)
     }
 
     return result.distinctBy { it.name }
+  }
+
+  // ABI discovery already visits every base APK entry. Keep only the matching
+  // library records so the default, non-ELF path does not enumerate that ZIP twice.
+  private fun getDefaultAbiNativeLibs(packageInfo: PackageInfo, checkCancelled: () -> Unit): List<LibStringItem> {
+    val applicationInfo = packageInfo.applicationInfo ?: return emptyList()
+    val sourceDir = applicationInfo.sourceDir ?: return emptyList()
+    val baseLibs = mutableMapOf<String, MutableList<LibStringItem>>()
+    val abiSet = runCatching {
+      if (packageInfo.isArchivedPackage() || packageInfo.isOverlay()) return emptyList()
+      scanAbiSet(
+        file = File(sourceDir),
+        packageInfo = packageInfo,
+        isApk = false,
+        ignoreArch = true,
+        checkCancelled = checkCancelled
+      ) { entry, abiName ->
+        baseLibs.getOrPut(abiName) { mutableListOf() }.add(
+          LibStringItem(name = getApkLibEntryFileName(entry.name), size = entry.size, elfInfo = ElfInfo())
+        )
+      }
+    }.getOrElse {
+      if (it is CancellationException) throw it
+      return emptyList()
+    }
+    checkCancelled()
+    val abi = runCatching { getAbi(packageInfo, abiSet = abiSet) }.getOrNull() ?: return emptyList()
+    if (abi == ERROR || abi == NO_LIBS || abi == OVERLAY) return emptyList()
+    val abiName = ABI_STRING_MAP[abi % MULTI_ARCH]
+    // A failed scan may have collected only part of the archive. Preserve the
+    // existing reader/fallback behavior instead of returning partial records.
+    if (ERROR in abiSet) {
+      baseLibs.clear()
+      return getSourceLibs(packageInfo, abi, includeNativeLibsDir = false, parseElf = false, checkCancelled = checkCancelled)[abiName].orEmpty()
+    }
+    return baseLibs[abiName].orEmpty() +
+      getSplitLibs(packageInfo, abi, parseElf = false, checkCancelled = checkCancelled)[abiName].orEmpty()
+  }
+
+  internal fun parseNativeDirElfInfo(file: File, parseElf: Boolean, checkCancelled: () -> Unit = {}): ElfInfo {
+    checkCancelled()
+    if (!parseElf) {
+      return ElfInfo()
+    }
+    return runCatching {
+      ElfParser(file, checkCancelled).use { parser ->
+        parser.parseHeader()
+        ElfInfo(parser.getEType(), parser.getMinPageSize())
+      }
+    }.getOrElse {
+      if (it is CancellationException) throw it
+      ElfInfo(ET_NOT_ELF, -1)
+    }
   }
 
   /**
@@ -232,19 +272,24 @@ object PackageUtils {
     packageInfo: PackageInfo,
     specifiedAbi: Int? = null,
     includeNativeLibsDir: Boolean = true,
-    parseElf: Boolean
+    parseElf: Boolean,
+    parseElfForAbi: Int? = null,
+    checkCancelled: () -> Unit = {}
   ): Map<String, List<LibStringItem>> {
     if (specifiedAbi == ERROR || specifiedAbi == NO_LIBS || specifiedAbi == OVERLAY) return emptyMap()
     val sourceDir = packageInfo.applicationInfo?.sourceDir ?: return emptyMap()
     val file = File(sourceDir)
-    val map = getApkFileLibs(file, specifiedAbi, parseElf).toMutableMap()
-    if (map.isEmpty() || (map.keys.size == 1 && map.keys.first() == "assets")) {
-      map += getSplitLibs(packageInfo, specifiedAbi, parseElf)
+    val map = getApkFileLibs(file, specifiedAbi, parseElf, parseElfForAbi, checkCancelled).toMutableMap()
+    for ((abi, libs) in getSplitLibs(packageInfo, specifiedAbi, parseElf, parseElfForAbi, checkCancelled)) {
+      map.getOrPut(abi) { mutableListOf() }.addAll(libs)
     }
     if (map.isEmpty() && includeNativeLibsDir) {
       val abi = specifiedAbi ?: getAbi(packageInfo)
       if (abi == ERROR || abi == NO_LIBS || abi == OVERLAY) return emptyMap()
-      val libs = getNativeDirLibs(packageInfo, specifiedAbi, parseElf).toMutableList()
+      val shouldParseNativeDir = parseElf || parseElfForAbi?.let {
+        it % MULTI_ARCH == abi % MULTI_ARCH
+      } == true
+      val libs = getNativeDirLibs(packageInfo, specifiedAbi, shouldParseNativeDir, checkCancelled).toMutableList()
       map += mapOf(ABI_STRING_MAP[abi % MULTI_ARCH]!! to libs)
     }
     return map
@@ -255,20 +300,28 @@ object PackageUtils {
    * @param packageInfo PackageInfo
    * @return List of LibStringItem
    */
-  private fun getSplitLibs(packageInfo: PackageInfo, specifiedAbi: Int? = null, parseElf: Boolean): Map<String, MutableList<LibStringItem>> {
+  private fun getSplitLibs(
+    packageInfo: PackageInfo,
+    specifiedAbi: Int? = null,
+    parseElf: Boolean,
+    parseElfForAbi: Int? = null,
+    checkCancelled: () -> Unit = {}
+  ): Map<String, MutableList<LibStringItem>> {
     val splitList = getSplitsSourceDir(packageInfo)
     if (splitList.isNullOrEmpty()) {
       return emptyMap()
     }
 
     val map = mutableMapOf<String, MutableList<LibStringItem>>()
-    splitList.filter {
-      val fileName = it.split(File.separator).last()
-      val specifiedAvailable = specifiedAbi != null && fileName.contains(ABI_VALUE_TO_INSTRUCTION_SET_MAP[specifiedAbi].toString())
-      val isAbiSplitFile = specifiedAbi == null && INSTRUCTION_SET_MAP_TO_ABI_VALUE.keys.any { key -> fileName.contains(key) }
-      specifiedAvailable || isAbiSplitFile
-    }.forEach { split ->
-      val splitMap = getApkFileLibs(File(split), parseElf = parseElf)
+    splitList.forEach { split ->
+      checkCancelled()
+      val splitMap = getApkFileLibs(
+        file = File(split),
+        specifiedAbi = specifiedAbi,
+        parseElf = parseElf,
+        parseElfForAbi = parseElfForAbi,
+        checkCancelled = checkCancelled
+      )
       for ((key, newList) in splitMap) {
         map.merge(key, newList) { existingList, _ ->
           existingList.apply { addAll(newList) }
@@ -279,8 +332,6 @@ object PackageUtils {
     return map
   }
 
-  private val regex_splits by lazy { Regex("split_(.*)\\.apk") }
-
   /**
    * Get split apks dirs
    * @param packageInfo PackageInfo
@@ -290,83 +341,150 @@ object PackageUtils {
     val ai = packageInfo.applicationInfo ?: return null
     if (FreezeUtils.isAppFrozen(ai)) {
       File(ai.sourceDir).parentFile?.takeIf { it.exists() }?.let { files ->
-        return files.listFiles { file -> file.name.matches(regex_splits) }
-          ?.map { it.absolutePath }
-          ?.toTypedArray()
+        return files.listFiles { file -> file.name.startsWith("split_") && file.name.endsWith(".apk") }
+          ?.let { list -> Array(list.size) { list[it].absolutePath } }
       }
     }
     return ai.splitSourceDirs
   }
 
   private const val ENABLE_GET_APK_FILE_LIBS_LOG = true
+  private const val APK_ENTRY_SEPARATOR = '/'
+  private const val TRACE_APK_LIBS_DATA_OFFSET = "LC PackageUtils apkLibsDataOffset"
+  private const val TRACE_APK_LIBS_MATCH_ENTRIES = "LC PackageUtils apkLibsMatchEntries"
+  private const val TRACE_APK_LIBS_OPEN_ZIP = "LC PackageUtils apkLibsOpenZip"
+  private const val TRACE_APK_LIBS_PARSE_ELF = "LC PackageUtils apkLibsParseElf"
+  private const val TRACE_FIND_DEX_CLASSES = "LC PackageUtils findDexClasses"
 
-  private fun getApkFileLibs(file: File, specifiedAbi: Int? = null, parseElf: Boolean): Map<String, MutableList<LibStringItem>> {
+  private fun getApkFileLibs(
+    file: File,
+    specifiedAbi: Int? = null,
+    parseElf: Boolean,
+    parseElfForAbi: Int? = null,
+    checkCancelled: () -> Unit = {}
+  ): Map<String, MutableList<LibStringItem>> {
+    checkCancelled()
     if (file.exists().not() || file.canRead().not()) {
       return emptyMap()
     }
-    if (!parseElf) {
-      return getApkFileLibsWithoutParsingElf(file, specifiedAbi)
+    if (!parseElf && parseElfForAbi == null) {
+      return getApkFileLibsWithoutParsingElf(file, specifiedAbi, checkCancelled)
     }
 
     val libDir = "lib"
     val assetsDir = "assets"
-    val sourceDir = specifiedAbi?.let { libDir + File.separator + ABI_STRING_MAP[it % MULTI_ARCH] }
+    val sourceDir = specifiedAbi?.let {
+      libDir + File.separator + ABI_STRING_MAP[it % MULTI_ARCH] + File.separator
+    }
+    val parseElfSourceDir = parseElfForAbi?.let {
+      libDir + File.separator + ABI_STRING_MAP[it % MULTI_ARCH] + File.separator
+    }
     val map = mutableMapOf<String, MutableList<LibStringItem>>()
     val timeRecorder = TimeRecorder()
 
     if (ENABLE_GET_APK_FILE_LIBS_LOG) timeRecorder.start()
     try {
-      val getDataOffsetMethod = ZipFile::class.java.getDeclaredMethod("getDataOffset", ZipArchiveEntry::class.java).apply {
-        isAccessible = true
-      }
-      ZipFile.Builder().setFile(file).get().use { zipFile ->
-        zipFile.entries
-          .asSequence()
-          .filter { !it.isDirectory && it.name.endsWith(".so") && (sourceDir == null || it.name.startsWith(sourceDir)) }
-          .forEach { entry ->
-            val pathFirst = entry.name.split(File.separator).first()
-            val dir = STRING_ABI_MAP.keys.find { entry.name.startsWith(libDir + File.separator + it) }
-              ?: if (pathFirst == assetsDir) assetsDir else return@forEach
-            val offset = getDataOffsetMethod.invoke(zipFile, entry) as Long
+      tracePackageUtilsSection(TRACE_APK_LIBS_OPEN_ZIP) { ZipFileCompat(file) }.use { zipFile ->
+        val nativeEntries = collectNativeZipEntries(
+          zipFile = zipFile,
+          sourceDir = sourceDir,
+          parseElf = parseElf,
+          parseElfSourceDir = parseElfSourceDir,
+          checkCancelled = checkCancelled
+        )
+        val storedEntryOffsets by lazy {
+          loadStoredEntryOffsets(file, nativeEntries.storedEntryNames, checkCancelled)
+        }
+        nativeEntries.entries.forEach { entry ->
+          checkCancelled()
+          val entryName = entry.name
+          val dir = getApkLibEntryDir(entryName, libDir, assetsDir) ?: return@forEach
+          val shouldParseElf = parseElf || parseElfSourceDir?.let { entryName.startsWith(it) } == true
 
-            val currentEntryZipAlignment = if (entry.method == ZipEntry.STORED) {
-              getZipAlignment(offset)
-            } else {
-              -1
-            }
-            val elfParser = runCatching {
-              ElfParser(zipFile.getInputStream(entry)).use { parser ->
-                parser.parseHeader()
-                parser
-              }
-            }.getOrNull()
-
-            val item = LibStringItem(
-              name = entry.name.split(File.separator).last(),
-              size = entry.size,
-              elfInfo = ElfInfo(
-                elfParser?.getEType() ?: ET_NOT_ELF,
-                elfParser?.getMinPageSize() ?: -1,
-                zipAlignment = currentEntryZipAlignment
-              ),
-              source = entry.name,
-              process = file.name
-            )
-            map.getOrPut(dir) { mutableListOf() }.add(item)
+          val currentEntryZipAlignment = if (shouldParseElf && entry.method == ZipEntry.STORED) {
+            getZipAlignment(storedEntryOffsets[entryName] ?: -1L)
+          } else {
+            -1
           }
+          val elfInfo = if (shouldParseElf) {
+            tracePackageUtilsSection(TRACE_APK_LIBS_PARSE_ELF) {
+              runCatching {
+                ElfParser(zipFile.getInputStream(entry), checkCancelled).use { parser ->
+                  parser.parseHeader()
+                  ElfInfo(
+                    parser.getEType(),
+                    parser.getMinPageSize(),
+                    zipAlignment = currentEntryZipAlignment
+                  )
+                }
+              }.getOrElse {
+                if (it is CancellationException) throw it
+                ElfInfo(
+                  ET_NOT_ELF,
+                  -1,
+                  zipAlignment = currentEntryZipAlignment
+                )
+              }
+            }
+          } else {
+            ElfInfo()
+          }
+
+          val item = LibStringItem(
+            name = getApkLibEntryFileName(entryName),
+            size = entry.size,
+            elfInfo = elfInfo,
+            source = entryName,
+            process = file.name
+          )
+          map.getOrPut(dir) { mutableListOf() }.add(item)
+        }
       }
     } catch (e: OutOfMemoryError) {
       logApkFileLibsFailure(file, parseElf = true, e)
       return emptyMap()
+    } catch (e: CancellationException) {
+      throw e
     } catch (e: Exception) {
       logApkFileLibsFailure(file, parseElf = true, e)
-      return getApkFileLibsWithoutParsingElf(file, specifiedAbi)
+      return getApkFileLibsWithoutParsingElf(file, specifiedAbi, checkCancelled)
     }
     if (ENABLE_GET_APK_FILE_LIBS_LOG) {
       timeRecorder.end()
       Timber.d("${file.absolutePath} Check zipFile cost: $timeRecorder")
     }
     return map
+  }
+
+  private fun collectNativeZipEntries(
+    zipFile: IZipFile,
+    sourceDir: String?,
+    parseElf: Boolean,
+    parseElfSourceDir: String?,
+    checkCancelled: () -> Unit
+  ): NativeZipEntries {
+    return tracePackageUtilsSection(TRACE_APK_LIBS_MATCH_ENTRIES) {
+      val entries = mutableListOf<ZipEntry>()
+      val storedEntryNames = mutableSetOf<String>()
+      val zipEntries = zipFile.getZipEntries()
+      while (zipEntries.hasMoreElements()) {
+        checkCancelled()
+        val entry = zipEntries.nextElement()
+        val entryName = entry.name
+        if (
+          !entry.isDirectory &&
+          entryName.endsWith(".so") &&
+          (sourceDir == null || entryName.startsWith(sourceDir))
+        ) {
+          entries.add(entry)
+          val shouldParseElf = parseElf || parseElfSourceDir?.let { entryName.startsWith(it) } == true
+          if (shouldParseElf && entry.method == ZipEntry.STORED) {
+            storedEntryNames.add(entryName)
+          }
+        }
+      }
+      NativeZipEntries(entries, storedEntryNames)
+    }
   }
 
   private fun getZipAlignment(offset: Long): Long {
@@ -376,7 +494,32 @@ object PackageUtils {
     return java.lang.Long.lowestOneBit(offset)
   }
 
-  private fun getApkFileLibsWithoutParsingElf(file: File, specifiedAbi: Int? = null): Map<String, MutableList<LibStringItem>> {
+  private fun loadStoredEntryOffsets(file: File, entryNames: Set<String>, checkCancelled: () -> Unit): Map<String, Long> {
+    return tracePackageUtilsSection(TRACE_APK_LIBS_DATA_OFFSET) {
+      ZipDataOffsetReader.read(file, entryNames, checkCancelled).also { offsets ->
+        check(offsets.keys.containsAll(entryNames)) {
+          "ZIP data offsets are incomplete for ${file.absolutePath}"
+        }
+      }
+    }
+  }
+
+  private data class NativeZipEntries(
+    val entries: List<ZipEntry>,
+    val storedEntryNames: Set<String>
+  )
+
+  private inline fun <T> tracePackageUtilsSection(sectionName: String, block: () -> T): T {
+    Trace.beginSection(sectionName)
+    return try {
+      block()
+    } finally {
+      Trace.endSection()
+    }
+  }
+
+  private fun getApkFileLibsWithoutParsingElf(file: File, specifiedAbi: Int? = null, checkCancelled: () -> Unit = {}): Map<String, MutableList<LibStringItem>> {
+    checkCancelled()
     if (file.exists().not()) {
       return emptyMap()
     }
@@ -390,14 +533,14 @@ object PackageUtils {
         zipFile.getZipEntries()
           .asSequence()
           .filter {
+            checkCancelled()
             it.isDirectory.not() && it.name.endsWith(".so") && (sourceDir == null || it.name.startsWith(sourceDir))
           }
           .forEach { entry ->
-            val pathFirst = entry.name.split(File.separator).first()
-            val dir = STRING_ABI_MAP.keys.find { entry.name.startsWith(libDir + File.separator + it) }
-              ?: if (pathFirst == assetsDir) assetsDir else return@forEach
+            val entryName = entry.name
+            val dir = getApkLibEntryDir(entryName, libDir, assetsDir) ?: return@forEach
             val item = LibStringItem(
-              name = entry.name.split(File.separator).last(),
+              name = getApkLibEntryFileName(entryName),
               size = entry.size,
               elfInfo = ElfInfo()
             )
@@ -407,12 +550,52 @@ object PackageUtils {
     } catch (e: OutOfMemoryError) {
       logApkFileLibsFailure(file, parseElf = false, e)
       return emptyMap()
+    } catch (e: CancellationException) {
+      throw e
     } catch (e: Exception) {
       logApkFileLibsFailure(file, parseElf = false, e)
       return emptyMap()
     }
 
     return map
+  }
+
+  private fun getApkLibEntryDir(
+    entryName: String,
+    libDir: String,
+    assetsDir: String
+  ): String? {
+    val firstSeparator = entryName.indexOf(APK_ENTRY_SEPARATOR)
+    val firstSegment = if (firstSeparator >= 0) {
+      entryName.substring(0, firstSeparator)
+    } else {
+      entryName
+    }
+
+    return when (firstSegment) {
+      assetsDir -> assetsDir
+
+      libDir -> {
+        val secondSeparator = entryName.indexOf(APK_ENTRY_SEPARATOR, firstSeparator + 1)
+        val secondSegment = if (secondSeparator >= 0) {
+          entryName.substring(firstSeparator + 1, secondSeparator)
+        } else {
+          entryName.substring(firstSeparator + 1)
+        }
+        secondSegment.takeIf { STRING_ABI_MAP.containsKey(it) }
+      }
+
+      else -> null
+    }
+  }
+
+  private fun getApkLibEntryFileName(entryName: String): String {
+    val lastSeparator = entryName.lastIndexOf(APK_ENTRY_SEPARATOR)
+    return if (lastSeparator >= 0) {
+      entryName.substring(lastSeparator + 1)
+    } else {
+      entryName
+    }
   }
 
   private fun logApkFileLibsFailure(file: File, parseElf: Boolean, throwable: Throwable) {
@@ -470,6 +653,12 @@ object PackageUtils {
       .toList()
   }
 
+  private val KOTLIN_DEX_PATTERNS = listOf(
+    "kotlin.*".toClassDefType(),
+    "kotlinx.*".toClassDefType()
+  )
+  private val UNKNOWN_ABI_RES = listOf(R.string.unknown)
+
   /**
    * Check if an app uses Kotlin language from classes.dex
    * @param file APK file of the app
@@ -478,9 +667,52 @@ object PackageUtils {
   fun isKotlinUsedInClassDex(file: File): Boolean {
     return findDexClasses(
       file,
-      listOf("kotlin.*".toClassDefType(), "kotlinx.*".toClassDefType()),
+      KOTLIN_DEX_PATTERNS,
       hasAny = true
-    ).isNotEmpty()
+    ).isNotEmpty() || hasKotlinRuntimeEvidenceInClassDex(file)
+  }
+
+  /** Detects Kotlin runtime traces that remain after R8 renames and repackages class definitions. */
+  internal fun hasKotlinRuntimeEvidenceInClassDex(file: File): Boolean {
+    return runCatching {
+      ZipFileCompat(file).use { hasKotlinRuntimeEvidenceInClassDex(it) }
+    }.getOrDefault(false)
+  }
+
+  internal fun hasKotlinRuntimeEvidenceInClassDex(zipFile: IZipFile, checkCancelled: () -> Unit = {}): Boolean {
+    val foundMarkers = linkedSetOf<String>()
+    var remainingScanBytes = MAX_KOTLIN_RUNTIME_SCAN_BYTES
+    return runCatching {
+      zipFile.getZipEntries().asSequence()
+        .filter {
+          checkCancelled()
+          isDexEntryName(it.name)
+        }
+        .forEach { entry ->
+          checkCancelled()
+          if (remainingScanBytes <= 0) return@runCatching false
+          val remainingMarkers = KOTLIN_RUNTIME_STRING_MARKERS.filterNot(foundMarkers::contains)
+          val scanResult = zipFile.getInputStream(entry).use { inputStream ->
+            StreamingDexClassScanner.findStringMatches(
+              inputStream = inputStream,
+              stringPatterns = remainingMarkers,
+              stopAfterMatches = KOTLIN_RUNTIME_STRING_THRESHOLD - foundMarkers.size,
+              entrySize = entry.size.takeIf { it >= 0 },
+              maxScanBytes = remainingScanBytes,
+              checkCancelled = checkCancelled
+            )
+          }
+          remainingScanBytes -= scanResult.bytesRead
+          foundMarkers += scanResult.matches
+          if (foundMarkers.size >= KOTLIN_RUNTIME_STRING_THRESHOLD) {
+            return@runCatching true
+          }
+        }
+      false
+    }.getOrElse {
+      if (it is java.util.concurrent.CancellationException) throw it
+      false
+    }
   }
 
   /**
@@ -495,16 +727,8 @@ object PackageUtils {
     @LibType type: Int,
     isSimpleName: Boolean
   ): List<StatefulComponent> {
-    val flag = when (type) {
-      SERVICE -> PackageManager.GET_SERVICES
-      ACTIVITY -> PackageManager.GET_ACTIVITIES
-      RECEIVER -> PackageManager.GET_RECEIVERS
-      PROVIDER -> PackageManager.GET_PROVIDERS
-      else -> 0
-    }
-
     return runCatching {
-      getComponentList(getPackageInfo(packageName, flag), type, isSimpleName)
+      getComponentList(getPackageInfo(packageName, getComponentPackageInfoFlag(type)), type, isSimpleName)
     }.getOrElse { emptyList() }
   }
 
@@ -520,17 +744,19 @@ object PackageUtils {
     @LibType type: Int,
     isSimpleName: Boolean
   ): List<String> {
-    val flag = when (type) {
+    return runCatching {
+      getComponentStringList(getPackageInfo(packageName, getComponentPackageInfoFlag(type)), type, isSimpleName)
+    }.getOrElse { emptyList() }
+  }
+
+  internal fun getComponentPackageInfoFlag(@LibType type: Int): Int {
+    return when (type) {
       SERVICE -> PackageManager.GET_SERVICES
       ACTIVITY -> PackageManager.GET_ACTIVITIES
       RECEIVER -> PackageManager.GET_RECEIVERS
       PROVIDER -> PackageManager.GET_PROVIDERS
       else -> 0
     }
-
-    return runCatching {
-      getComponentStringList(getPackageInfo(packageName, flag), type, isSimpleName)
-    }.getOrElse { emptyList() }
   }
 
   /**
@@ -627,21 +853,19 @@ object PackageUtils {
     if (list.isNullOrEmpty()) {
       return emptyList()
     }
-    return list.asSequence()
-      .map {
-        val name = if (isSimpleName) {
-          it.name.orEmpty().removePrefix(packageName)
-        } else {
-          it.name.orEmpty()
-        }
-        StatefulComponent(
-          name,
-          isComponentEnabled(it),
-          isComponentExported(it),
-          it.processName.orEmpty().removePrefix(it.packageName)
-        )
+    return list.map {
+      val name = if (isSimpleName) {
+        it.name.orEmpty().shortenComponentName(packageName)
+      } else {
+        it.name.orEmpty()
       }
-      .toList()
+      StatefulComponent(
+        name,
+        isComponentEnabled(it),
+        isComponentExported(it),
+        it.processName.orEmpty().removePrefix(it.packageName)
+      )
+    }
   }
 
   fun getComponentList(
@@ -652,16 +876,14 @@ object PackageUtils {
     if (list.isEmpty()) {
       return emptyList()
     }
-    return list.asSequence()
-      .map {
-        val name = if (isSimpleName) {
-          it.removePrefix(packageName)
-        } else {
-          it
-        }
-        StatefulComponent(componentName = name, enabled = true, exported = true, processName = "")
+    return list.map {
+      val name = if (isSimpleName) {
+        it.shortenComponentName(packageName)
+      } else {
+        it
       }
-      .toList()
+      StatefulComponent(componentName = name, enabled = true, exported = true, processName = "")
+    }
   }
 
   /**
@@ -679,15 +901,25 @@ object PackageUtils {
     if (list.isNullOrEmpty()) {
       return emptyList()
     }
-    return list.asSequence()
-      .map {
-        if (isSimpleName) {
-          it.name.removePrefix(packageName)
-        } else {
-          it.name
-        }
+    return list.map {
+      if (isSimpleName) {
+        it.name.shortenComponentName(packageName)
+      } else {
+        it.name
       }
-      .toList()
+    }
+  }
+
+  private fun String.shortenComponentName(packageName: String): String {
+    return if (packageName.isNotEmpty() &&
+      length > packageName.length &&
+      this[packageName.length] == '.' &&
+      startsWith(packageName)
+    ) {
+      substring(packageName.length)
+    } else {
+      this
+    }
   }
 
   /**
@@ -704,6 +936,18 @@ object PackageUtils {
     isApk: Boolean = false,
     ignoreArch: Boolean = false
   ): Set<Int> {
+    return scanAbiSet(file, packageInfo, isApk, ignoreArch)
+  }
+
+  private fun scanAbiSet(
+    file: File,
+    packageInfo: PackageInfo,
+    isApk: Boolean,
+    ignoreArch: Boolean,
+    checkCancelled: () -> Unit = {},
+    onNativeEntry: ((ZipEntry, String) -> Unit)? = null
+  ): Set<Int> {
+    checkCancelled()
     val abiSet = mutableSetOf<Int>()
 
     if (file.exists().not()) {
@@ -722,11 +966,21 @@ object PackageUtils {
       ZipFileCompat(file).use { zipFile ->
         zipFile.getZipEntries()
           .asSequence()
-          .filter { !it.isDirectory && it.name.startsWith(libDirPrefix) && it.name.endsWith(".so") }
+          .filter {
+            checkCancelled()
+            !it.isDirectory && it.name.startsWith(libDirPrefix) && it.name.endsWith(".so")
+          }
           .mapNotNull { entry ->
-            STRING_ABI_MAP.entries.find { entry.name.startsWith("$libDirPrefix${it.key}") }
-              ?.takeIf { (string, _) -> ignoreArch || Build.SUPPORTED_ABIS.contains(string) }
-              ?.value
+            val abiName = entry.name.removePrefix(libDirPrefix)
+              .substringBefore('/')
+              .substringBefore(File.separatorChar)
+            val abi = STRING_ABI_MAP[abiName]
+            if (abi != null && (ignoreArch || Build.SUPPORTED_ABIS.contains(abiName))) {
+              onNativeEntry?.invoke(entry, abiName)
+              abi
+            } else {
+              null
+            }
           }
           .toCollection(abiSet)
       }
@@ -745,11 +999,11 @@ object PackageUtils {
       }
 
       abiSet
-    }.onFailure {
-      Timber.e(it)
-      abiSet.clear()
-      abiSet.add(ERROR)
-    }.getOrDefault(abiSet)
+    }.getOrElse {
+      if (it is CancellationException) throw it
+      Timber.w(it, "Failed to scan ABI set from ${file.absolutePath}")
+      mutableSetOf(ERROR)
+    }
   }
 
   /**
@@ -759,32 +1013,23 @@ object PackageUtils {
    */
   private fun getAbiListByNativeDir(nativePath: String): MutableSet<Int> {
     val file = File(nativePath.substring(0, nativePath.lastIndexOf(File.separator)))
-    val abis = mutableSetOf<Int>()
-
-    val fileList = file.listFiles() ?: return mutableSetOf()
-
-    fileList.asSequence()
-      .forEach {
-        if (it.isDirectory) {
-          INSTRUCTION_SET_MAP_TO_ABI_VALUE[it.name]?.let { abi ->
-            abis.add(abi)
-          }
-        }
-      }
-
-    return abis
+    return file.listFiles()
+      ?.asSequence()
+      ?.filter { it.isDirectory }
+      ?.mapNotNullTo(mutableSetOf()) { INSTRUCTION_SET_MAP_TO_ABI_VALUE[it.name] }
+      ?: mutableSetOf()
   }
 
   private fun getAbiListBySplitApks(splitSource: Array<String>): Set<Int> {
-    return splitSource.filter { source -> STRING_ABI_MAP.keys.any { source.contains(it) } }
-      .map { source ->
-        val abiString = source.substringAfterLast(File.separator)
-          .removePrefix("split_config.")
-          .removeSuffix(".apk")
-        STRING_ABI_MAP[abiString] ?: ERROR
+    return splitSource.mapNotNullTo(mutableSetOf()) { source ->
+      val fileName = source.substringAfterLast(File.separator)
+      if (fileName.startsWith("split_config.") && fileName.endsWith(".apk")) {
+        val abiString = fileName.substring("split_config.".length, fileName.length - 4)
+        STRING_ABI_MAP[abiString]
+      } else {
+        null
       }
-      .filter { it != ERROR }
-      .toSet()
+    }
   }
 
   /**
@@ -862,9 +1107,9 @@ object PackageUtils {
       return Constants.OVERLAY_STRING
     }
     val resList = if (!showExtraInfo && abi >= MULTI_ARCH) {
-      ABI_STRING_RES_MAP[abi % MULTI_ARCH] ?: listOf(R.string.unknown)
+      ABI_STRING_RES_MAP[abi % MULTI_ARCH] ?: UNKNOWN_ABI_RES
     } else {
-      ABI_STRING_RES_MAP[abi] ?: listOf(R.string.unknown)
+      ABI_STRING_RES_MAP[abi] ?: UNKNOWN_ABI_RES
     }
     return resList.joinToString { context.getString(it) }
   }
@@ -948,32 +1193,54 @@ object PackageUtils {
   fun findDexClasses(
     sourceFile: File,
     classes: List<String>,
-    hasAny: Boolean = false
-  ): List<String> {
-    val findList = mutableListOf<String>()
-    return runCatching {
-      FastDexFileFactory.loadDexContainer(sourceFile, Opcodes.getDefault()).apply {
-        dexEntryNames.forEach { entry ->
-          getEntry(entry)?.dexFile?.classes?.forEach { def ->
-            classes.forEach {
-              val foundClass = if (it.last() == '*') {
-                def.type.startsWith(it.removeSuffix("*"))
-              } else {
-                def.type == it
-              }
-              if (foundClass && !findList.contains(it)) {
-                findList.add(it)
+    hasAny: Boolean = false,
+    checkCancelled: () -> Unit = {}
+  ): List<String> = runCatching {
+    checkCancelled()
+    ZipFileCompat(sourceFile).use { findDexClasses(it, classes, hasAny, checkCancelled) }
+  }.getOrElse {
+    if (it is java.util.concurrent.CancellationException) throw it
+    emptyList()
+  }
 
-                if (findList.size == classes.size || hasAny) {
-                  return@runCatching findList
-                }
-              }
+  fun findDexClasses(
+    zipFile: IZipFile,
+    classes: List<String>,
+    hasAny: Boolean = false,
+    checkCancelled: () -> Unit = {}
+  ): List<String> {
+    if (classes.isEmpty()) return emptyList()
+    val foundClasses = linkedSetOf<String>()
+    val distinctClassCount = classes.toSet().size
+    return tracePackageUtilsSection(TRACE_FIND_DEX_CLASSES) {
+      runCatching {
+        zipFile.getZipEntries().asSequence()
+          .filter {
+            checkCancelled()
+            isDexEntryName(it.name)
+          }
+          .forEach { entry ->
+            checkCancelled()
+            val remainingClasses = classes.filterNot(foundClasses::contains)
+            zipFile.getInputStream(entry).use { inputStream ->
+              foundClasses += StreamingDexClassScanner.findClasses(
+                inputStream = inputStream,
+                classPatterns = remainingClasses,
+                hasAny = hasAny,
+                entrySize = entry.size.takeIf { it >= 0 },
+                checkCancelled = checkCancelled
+              )
+            }
+            if ((hasAny && foundClasses.isNotEmpty()) || foundClasses.size == distinctClassCount) {
+              return@runCatching foundClasses.toList()
             }
           }
-        }
+        foundClasses.toList()
+      }.getOrElse {
+        if (it is java.util.concurrent.CancellationException) throw it
+        emptyList()
       }
-      return findList
-    }.getOrDefault(emptyList())
+    }
   }
 
   /**
@@ -985,6 +1252,24 @@ object PackageUtils {
     throw RuntimeException("Not implemented")
   }
 
+  internal fun isDexEntryName(name: String): Boolean {
+    val len = name.length
+    if (len < 11 || !name.startsWith("classes") || !name.endsWith(".dex")) return false
+    for (i in 7 until len - 4) {
+      val c = name[i]
+      if (c < '0' || c > '9') return false
+    }
+    return true
+  }
+  private const val KOTLIN_RUNTIME_STRING_THRESHOLD = 2
+  private const val MAX_KOTLIN_RUNTIME_SCAN_BYTES = 32 * 1024 * 1024
+  private val KOTLIN_RUNTIME_STRING_MARKERS = listOf(
+    "kotlin.jvm.functions.Function1",
+    "kotlin.coroutines.jvm.internal.BaseContinuationImpl",
+    "kotlinx.coroutines.internal.StackTraceRecoveryKt",
+    "COROUTINE_SUSPENDED"
+  )
+
   /**
    * Get permissions of an application
    * @param packageName Package name of the app
@@ -993,17 +1278,6 @@ object PackageUtils {
   fun getPermissionsList(packageName: String): List<String> {
     return runCatching {
       getPackageInfo(packageName, PackageManager.GET_PERMISSIONS).getPermissionsList()
-    }.getOrElse { emptyList() }
-  }
-
-  /**
-   * Get permissions of an application with granted state
-   * @param packageName Package name of the app
-   * @return Permissions list with granted state
-   */
-  fun getStatefulPermissionsList(packageName: String): List<Pair<String, Boolean>> {
-    return runCatching {
-      getPackageInfo(packageName, PackageManager.GET_PERMISSIONS).getStatefulPermissionsList()
     }.getOrElse { emptyList() }
   }
 
@@ -1047,98 +1321,41 @@ object PackageUtils {
     val certificate = X509Certificate.getInstance(bytes)
     val serialNumber = "0x${certificate.serialNumber.toString(16)}"
     val source = buildString {
-      // Signature Scheme Version
-      append(context.getString(R.string.signature_scheme_version))
-      append(":")
-      appendLine(signatureSchemes.joinToString(", "))
-      // Signature Version
-      append(context.getString(R.string.signature_version))
-      append(":")
-      appendLine(certificate.version + 1)
-      // Signature Serial Number
-      append(context.getString(R.string.signature_serial_number))
-      append(":")
-      append(certificate.serialNumber)
-      append("(")
-      append(serialNumber)
-      appendLine(")")
-      // Signature Issuer
-      append(context.getString(R.string.signature_issuer))
-      append(":")
-      appendLine(certificate.issuerDN)
-      // Signature Subject
-      append(context.getString(R.string.signature_subject))
-      append(":")
-      appendLine(certificate.subjectDN)
-      // Signature Validity Not Before
-      append(context.getString(R.string.signature_validity_not_before))
-      append(":")
-      appendLine(dateFormat.format(certificate.notBefore))
-      // Signature Validity Not After
-      append(context.getString(R.string.signature_validity_not_after))
-      append(":")
-      appendLine(dateFormat.format(certificate.notAfter))
-      // Signature Public Key Format
-      append(context.getString(R.string.signature_public_key_format))
-      append(":")
-      appendLine(certificate.publicKey.format)
-      append(context.getString(R.string.signature_public_key_algorithm))
-      append(":")
-      appendLine(certificate.publicKey.algorithm)
+      fun field(label: Int, value: Any?) {
+        append(context.getString(label))
+        append(":")
+        appendLine(value)
+      }
+
+      field(R.string.signature_scheme_version, signatureSchemes.joinToString(", "))
+      field(R.string.signature_version, certificate.version + 1)
+      field(R.string.signature_serial_number, "${certificate.serialNumber}($serialNumber)")
+      field(R.string.signature_issuer, certificate.issuerDN)
+      field(R.string.signature_subject, certificate.subjectDN)
+      field(R.string.signature_validity_not_before, dateFormat.format(certificate.notBefore))
+      field(R.string.signature_validity_not_after, dateFormat.format(certificate.notAfter))
+      field(R.string.signature_public_key_format, certificate.publicKey.format)
+      field(R.string.signature_public_key_algorithm, certificate.publicKey.algorithm)
       when (val key = certificate.publicKey) {
         is RSAPublicKey -> {
-          // Public Key Exponent
-          append(context.getString(R.string.signature_public_key_exponent))
-          append(":")
-          append(key.publicExponent)
-          append("(0x")
-          append(key.publicExponent.toString(16))
-          appendLine(")")
-          // Public Key Modulus Size
-          append(context.getString(R.string.signature_public_key_modulus_size))
-          append(":")
-          appendLine(key.modulus.toString(2).length)
-          // Public Key Modulus
-          append(context.getString(R.string.signature_public_key_modulus))
-          append(":")
-          appendLine(key.modulus.toByteArray().toHexString(":"))
+          field(R.string.signature_public_key_exponent, "${key.publicExponent}(0x${key.publicExponent.toString(16)})")
+          field(R.string.signature_public_key_modulus_size, key.modulus.toString(2).length)
+          field(R.string.signature_public_key_modulus, key.modulus.toByteArray().toHexString(":"))
         }
 
         is DSAPublicKey -> {
-          // Public Key Y
-          append(context.getString(R.string.signature_public_key_y))
-          append(":")
-          appendLine(key.y)
+          field(R.string.signature_public_key_y, key.y)
         }
 
         else -> {
-          // Public Key Type
-          append(context.getString(R.string.signature_public_key_type))
-          append(":")
-          appendLine(key.javaClass.simpleName)
+          field(R.string.signature_public_key_type, key.javaClass.simpleName)
         }
       }
-      // Signature Algorithm Name
-      append(context.getString(R.string.signature_algorithm_name))
-      append(":")
-      appendLine(certificate.sigAlgName)
-      // Signature Algorithm OID
-      append(context.getString(R.string.signature_algorithm_oid))
-      append(":")
-      appendLine(certificate.sigAlgOID)
-      // Signature MD5
-      append(context.getString(R.string.signature_md5))
-      append(":")
-      appendLine(bytes.md5(""))
-      // Signature SHA1
-      append(context.getString(R.string.signature_sha1))
-      append(":")
-      appendLine(bytes.sha1(""))
-      // Signature SHA256
-      append(context.getString(R.string.signature_sha256))
-      append(":")
-      appendLine(bytes.sha256(""))
-      // Signature CharString
+      field(R.string.signature_algorithm_name, certificate.sigAlgName)
+      field(R.string.signature_algorithm_oid, certificate.sigAlgOID)
+      field(R.string.signature_md5, bytes.md5(""))
+      field(R.string.signature_sha1, bytes.sha1(""))
+      field(R.string.signature_sha256, bytes.sha256(""))
       append(context.getString(R.string.signature_char_string))
       append(":")
       append(signature.toCharsString())
@@ -1146,27 +1363,11 @@ object PackageUtils {
     return LibStringItem(serialNumber, 0, source, null)
   }
 
-  fun getLauncherActivity(packageName: String): String {
-    val intent = Intent(Intent.ACTION_MAIN, null)
-      .addCategory(Intent.CATEGORY_LAUNCHER)
-      .setPackage(packageName)
-    val info = PackageManagerCompat.queryIntentActivities(intent, 0)
-    return info.getOrNull(0)?.activityInfo?.name.orEmpty()
-  }
-
-  fun startLaunchAppActivity(context: Context, packageName: String?) {
-    if (packageName == null) {
-      return
-    }
-    val launcherActivity = getLauncherActivity(packageName)
-    val launchIntent = Intent(Intent.ACTION_MAIN)
-      .addCategory(Intent.CATEGORY_LAUNCHER)
-      .setClassName(packageName, launcherActivity)
-      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    context.startActivity(launchIntent)
-  }
-
-  fun getBuildVersionsInfo(packageInfo: PackageInfo?, packageName: String): CharSequence {
+  fun getBuildVersionsInfo(
+    packageInfo: PackageInfo?,
+    packageName: String,
+    isApexPackage: Boolean = false
+  ): CharSequence {
     if (packageInfo == null && packageName != Constants.EXAMPLE_PACKAGE) {
       return ""
     }
@@ -1183,7 +1384,7 @@ object PackageUtils {
     val compile = packageInfo?.getCompileSdkVersion() ?: Build.VERSION.SDK_INT
 
     return buildSpannedString {
-      if (OsUtils.atLeastQ() && LocalAppDataSource.apexPackageSet.contains(packageName)) {
+      if (OsUtils.atLeastQ() && isApexPackage) {
         append(", APEX")
       }
       if (showTarget) {

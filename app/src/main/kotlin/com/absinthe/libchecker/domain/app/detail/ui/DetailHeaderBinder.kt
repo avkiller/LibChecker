@@ -1,0 +1,141 @@
+package com.absinthe.libchecker.domain.app.detail.ui
+
+import android.content.pm.ApplicationInfo
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
+import android.text.style.TypefaceSpan
+import android.view.View
+import androidx.core.graphics.ColorUtils
+import androidx.core.text.buildSpannedString
+import androidx.core.text.inSpans
+import coil.load
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.domain.app.detail.header.AppDetailHeaderExtraInfo
+import com.absinthe.libchecker.domain.app.detail.header.AppDetailHeaderTitleData
+import com.absinthe.libchecker.domain.app.detail.header.DetailHeaderExtraInfoState
+import com.absinthe.libchecker.domain.app.detail.header.DetailHeaderRenderState
+import com.absinthe.libchecker.domain.app.detail.ui.view.DetailsTitleView
+import com.absinthe.libchecker.utils.extensions.getColorByAttr
+import com.absinthe.libchecker.utils.extensions.setLongClickCopiedToClipboard
+import com.absinthe.libchecker.view.CollapsedToolbarView
+import com.absinthe.libchecker.view.app.AppIdentityHeaderRenderState
+import com.absinthe.libraries.utils.utils.AntiShakeUtils
+import me.zhanghai.android.appiconloader.AppIconLoader
+
+class DetailHeaderBinder(
+  private val detailsTitleView: DetailsTitleView,
+  private val collapsedToolbarView: CollapsedToolbarView,
+  private val blurView: View,
+  private val onAppInfoClick: (String) -> Unit
+) {
+  private var boundState: DetailHeaderRenderState? = null
+  private var boundApplicationInfo: ApplicationInfo? = null
+
+  fun bind(
+    state: DetailHeaderRenderState,
+    applicationInfo: ApplicationInfo?
+  ) {
+    val previousState = boundState
+    if (previousState?.title != state.title || boundApplicationInfo !== applicationInfo) {
+      bindTitle(state.title, applicationInfo)
+    }
+    if (previousState?.extraInfo != state.extraInfo) {
+      bindExtraInfo(state.extraInfo)
+    }
+    boundState = state
+    boundApplicationInfo = applicationInfo
+  }
+
+  private fun bindTitle(
+    title: AppDetailHeaderTitleData,
+    applicationInfo: ApplicationInfo?
+  ) {
+    val appIconLoader = AppIconLoader(
+      detailsTitleView.resources.getDimensionPixelSize(R.dimen.lib_detail_icon_size),
+      false,
+      detailsTitleView.context
+    )
+    val icon = applicationInfo?.let { appIconLoader.loadIcon(it) } ?: R.drawable.ic_icon_blueprint
+    collapsedToolbarView.apply {
+      bindTitle(title.title)
+      setIcon(icon)
+    }
+    detailsTitleView.renderIdentity(
+      AppIdentityHeaderRenderState(
+        appName = title.appName,
+        iconContentDescription = title.title,
+        packageName = title.packageName,
+        versionInfo = title.versionInfo
+      )
+    )
+    detailsTitleView.iconView.apply {
+      load(icon)
+      if (title.isAppInfoAvailable) {
+        setOnClickListener {
+          if (AntiShakeUtils.isInvalidClick(it)) {
+            return@setOnClickListener
+          }
+          onAppInfoClick(title.packageName)
+        }
+      } else {
+        setOnClickListener(null)
+      }
+      setDetailIconLongClick(applicationInfo, blurView)
+    }
+  }
+
+  private fun bindExtraInfo(extraInfo: DetailHeaderExtraInfoState) {
+    val text = when (extraInfo) {
+      DetailHeaderExtraInfoState.Loading,
+      DetailHeaderExtraInfoState.Empty -> ""
+
+      is DetailHeaderExtraInfoState.Android -> formatAndroid(extraInfo.value)
+
+      is DetailHeaderExtraInfoState.Harmony -> formatHarmony(extraInfo)
+    }
+    detailsTitleView.extraInfoView.apply {
+      this.text = text
+      setLongClickCopiedToClipboard(text)
+    }
+  }
+
+  private fun formatAndroid(extraInfo: AppDetailHeaderExtraInfo): CharSequence = buildSpannedString {
+    appendLabel("Target: ")
+    append(extraInfo.targetSdkInfo)
+    appendLabel(" Min: ")
+    append(extraInfo.minSdkInfo)
+    appendLabel(" Compile: ")
+    append(extraInfo.compileSdkInfo)
+    appendLabel(" Size: ")
+    append(extraInfo.sizeInfo)
+
+    extraInfo.sharedUserId?.let {
+      appendLine().append("sharedUserId = $it")
+    }
+  }
+
+  private fun formatHarmony(extraInfo: DetailHeaderExtraInfoState.Harmony): CharSequence = buildSpannedString {
+    appendLabel("Target: ")
+    append(extraInfo.targetVersion)
+    appendLabel("Min: ")
+    append(extraInfo.minSdkVersion)
+
+    extraInfo.jointUserId?.let {
+      appendLine().append("jointUserId = $it")
+    }
+  }
+
+  private fun SpannableStringBuilder.appendLabel(label: String) {
+    val labelColor = ColorUtils.blendARGB(
+      detailsTitleView.extraInfoView.currentTextColor,
+      detailsTitleView.context.getColorByAttr(com.google.android.material.R.attr.colorOnSurface),
+      0.3f
+    )
+    inSpans(
+      TypefaceSpan("sans-serif-condensed-medium"),
+      ForegroundColorSpan(labelColor)
+    ) {
+      append(label)
+    }
+  }
+}

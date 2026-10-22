@@ -11,46 +11,17 @@ import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 
 object DateUtils {
-  // RFC 1123 constants
-  private const val RFC_1123_DATE_TIME = "EEE, dd MMM yyyy HH:mm:ss z"
-
   // ISO 8601 constants
-  private const val ISO_8601_PATTERN_1 = "yyyy-MM-dd'T'HH:mm:ssZ"
-  private const val ISO_8601_PATTERN_2 = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
-  private val SUPPORTED_ISO_8601_PATTERNS = arrayOf(ISO_8601_PATTERN_1, ISO_8601_PATTERN_2)
-  private const val TICK_MARK_COUNT = 2
-  private const val COLON_PREFIX_COUNT = "+00".length
-  private const val COLON_INDEX = 22
+  private val SUPPORTED_ISO_8601_PATTERNS = arrayOf("yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd'T'HH:mm:ss.SSSZ")
 
-  /**
-   * Parses a date from the specified RFC 1123-compliant string.
-   *
-   * @param string the string to parse
-   * @return the [Date] resulting from the parsing, or null if the string could not be
-   * parsed
-   */
-  fun parseRfc1123DateTime(string: String): Date? {
-    return try {
-      SimpleDateFormat(RFC_1123_DATE_TIME, Locale.US).parse(string)
-    } catch (e: ParseException) {
-      null
+  private val iso8601Formatters = object : ThreadLocal<Array<SimpleDateFormat>>() {
+    override fun initialValue(): Array<SimpleDateFormat> {
+      return Array(SUPPORTED_ISO_8601_PATTERNS.size) {
+        SimpleDateFormat(SUPPORTED_ISO_8601_PATTERNS[it], Locale.US)
+      }
     }
-  }
-
-  /**
-   * Formats the specified date to an RFC 1123-compliant string.
-   *
-   * @param date     the date to format
-   * @param timeZone the [TimeZone] to use when formatting the date
-   * @return the formatted string
-   */
-  fun formatRfc1123DateTime(date: Date, timeZone: TimeZone): String {
-    val dateFormat = SimpleDateFormat(RFC_1123_DATE_TIME, Locale.US)
-    dateFormat.timeZone = timeZone
-    return dateFormat.format(date)
   }
 
   /**
@@ -62,14 +33,17 @@ object DateUtils {
    */
   fun parseIso8601DateTime(string: String): Date? {
     val s = string.replace("Z", "+00:00")
-    for (pattern in SUPPORTED_ISO_8601_PATTERNS) {
+    val formatters = iso8601Formatters.get()
+    for (i in SUPPORTED_ISO_8601_PATTERNS.indices) {
+      val pattern = SUPPORTED_ISO_8601_PATTERNS[i]
       var str = s
-      val colonPosition = pattern.lastIndexOf('Z') - TICK_MARK_COUNT + COLON_PREFIX_COUNT
+      val colonPosition = pattern.lastIndexOf('Z') + 1
       if (str.length > colonPosition) {
         str = str.substring(0, colonPosition) + str.substring(colonPosition + 1)
       }
       try {
-        return SimpleDateFormat(pattern, Locale.US).parse(str)
+        val formatter = formatters?.getOrNull(i) ?: SimpleDateFormat(pattern, Locale.US)
+        return formatter.parse(str)
       } catch (e: ParseException) {
         // try the next one
       }
@@ -77,21 +51,26 @@ object DateUtils {
     return null
   }
 
-  /**
-   * Formats the specified date to an ISO 8601-compliant string.
-   *
-   * @param date     the date to format
-   * @param timeZone the [TimeZone] to use when formatting the date
-   * @return the formatted string
-   */
-  fun formatIso8601DateTime(date: Date, timeZone: TimeZone): String {
-    val dateFormat = SimpleDateFormat(ISO_8601_PATTERN_1, Locale.US)
-    dateFormat.timeZone = timeZone
-    var formatted = dateFormat.format(date)
-    if (formatted.length > COLON_INDEX) {
-      formatted = formatted.substring(0, 22) + ":" + formatted.substring(22)
+  fun getHolidayEmoji(): String? {
+    val today = Calendar.getInstance()
+    val month = today.get(Calendar.MONTH)
+    val date = today.get(Calendar.DATE)
+    if (month == Calendar.DECEMBER && date == 25) {
+      return "\uD83C\uDF84"
     }
-    return formatted
+    if (month == Calendar.JANUARY || month == Calendar.FEBRUARY) {
+      val calendar = ChineseCalendar()
+      val cMonth = calendar.get(Calendar.MONTH)
+      val cDate = calendar.get(Calendar.DATE)
+      if (cMonth == Calendar.DECEMBER && cDate == calendar.getActualMaximum(Calendar.DATE)) {
+        return "\uD83C\uDFEE"
+      }
+      if (cMonth == Calendar.JANUARY && cDate == 1) {
+        val animalIndex = today.get(Calendar.YEAR) % 12
+        return ZODIAC_LIST.getOrNull(animalIndex)
+      }
+    }
+    return null
   }
 
   fun isChristmas(): Boolean {
@@ -102,6 +81,9 @@ object DateUtils {
   }
 
   fun isChineseNewYearEve(): Boolean {
+    val today = Calendar.getInstance()
+    val gMonth = today.get(Calendar.MONTH)
+    if (gMonth != Calendar.JANUARY && gMonth != Calendar.FEBRUARY) return false
     val calendar = ChineseCalendar()
     val date = calendar.get(Calendar.DATE)
     val month = calendar.get(Calendar.MONTH)
@@ -110,17 +92,21 @@ object DateUtils {
   }
 
   fun isChineseNewYear(): Boolean {
+    val today = Calendar.getInstance()
+    val gMonth = today.get(Calendar.MONTH)
+    if (gMonth != Calendar.JANUARY && gMonth != Calendar.FEBRUARY) return false
     val calendar = ChineseCalendar()
     val date = calendar.get(Calendar.DATE)
     val month = calendar.get(Calendar.MONTH)
     return month == Calendar.JANUARY && date == 1
   }
 
+  private val ZODIAC_LIST = arrayOf("🐒", "🐔", "🐶", "🐷", "🐭", "🐮", "🐯", "🐰", "🐲", "🐍", "🐴", "🐑", "🐒", "🐔", "🐶", "🐷")
+
   fun getChineseZodiac(): String {
     val cc = Calendar.getInstance(Locale.CHINA) as GregorianCalendar
     val animalIndex = cc.get(Calendar.YEAR) % 12
-    val zodiacList = listOf("🐒", "🐔", "🐶", "🐷", "🐭", "🐮", "🐯", "🐰", "🐲", "🐍", "🐴", "🐑", "🐒", "🐔", "🐶", "🐷")
-    return zodiacList[animalIndex]
+    return ZODIAC_LIST[animalIndex]
   }
 
   fun getToday(): String {
@@ -132,29 +118,15 @@ object DateUtils {
   }
 
   fun isTimestampToday(timestamp: Long): Boolean {
-    val calendar = Calendar.getInstance()
-    calendar.timeInMillis = timestamp
-
-    val today = Calendar.getInstance()
-    val todayYear = today.get(Calendar.YEAR)
-    val todayMonth = today.get(Calendar.MONTH)
-    val todayDay = today.get(Calendar.DAY_OF_MONTH)
-
-    val timestampYear = calendar.get(Calendar.YEAR)
-    val timestampMonth = calendar.get(Calendar.MONTH)
-    val timestampDay = calendar.get(Calendar.DAY_OF_MONTH)
-
-    return todayYear == timestampYear && todayMonth == timestampMonth && todayDay == timestampDay
+    return android.text.format.DateUtils.isToday(timestamp)
   }
 
   fun isTimestampThisMonth(timestamp: Long): Boolean {
     val calendar = Calendar.getInstance()
+    val todayYear = calendar.get(Calendar.YEAR)
+    val todayMonth = calendar.get(Calendar.MONTH)
+
     calendar.timeInMillis = timestamp
-
-    val today = Calendar.getInstance()
-    val todayYear = today.get(Calendar.YEAR)
-    val todayMonth = today.get(Calendar.MONTH)
-
     val timestampYear = calendar.get(Calendar.YEAR)
     val timestampMonth = calendar.get(Calendar.MONTH)
 

@@ -5,11 +5,15 @@ import androidx.collection.ArrayMap;
 import com.absinthe.libchecker.compat.IZipFile;
 import com.absinthe.libchecker.compat.ZipFileCompat;
 
+import org.apache.commons.io.IOUtils;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Map;
+import java.util.function.Supplier;
+import java.util.zip.ZipEntry;
 
 import pxb.android.Res_value;
 import pxb.android.axml.AxmlReader;
@@ -19,41 +23,18 @@ import timber.log.Timber;
 
 
 public class ManifestReader {
+  static final int MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
   private final ArrayMap<String, Object> properties = new ArrayMap<>();
   private final String[] demands;
 
   private ManifestReader(File apk, String[] demands) {
     this.demands = demands;
-    try (IZipFile zip = new ZipFileCompat(apk)) {
-      InputStream is = zip.getInputStream(zip.getEntry("AndroidManifest.xml"));
-      byte[] bytes = getBytesFromInputStream(is);
-      AxmlReader reader = new AxmlReader(bytes != null ? bytes : new byte[0]);
-      reader.accept(new AxmlVisitor() {
-        @Override
-        public NodeVisitor child(String ns, String name) {
-          NodeVisitor child = super.child(ns, name);
-          return new ManifestTagVisitor(child);
-        }
-      });
-    } catch (Exception e) {
-      Timber.w(e);
-    }
+    acceptManifest(apk, () -> new ManifestTagVisitor(null));
   }
 
   private ManifestReader(byte[] bytes, String[] demands) {
     this.demands = demands;
-    try {
-      AxmlReader reader = new AxmlReader(bytes != null ? bytes : new byte[0]);
-      reader.accept(new AxmlVisitor() {
-        @Override
-        public NodeVisitor child(String ns, String name) {
-          NodeVisitor child = super.child(ns, name);
-          return new ManifestTagVisitor(child);
-        }
-      });
-    } catch (Exception e) {
-      Timber.w(e);
-    }
+    acceptManifest(bytes, () -> new ManifestTagVisitor(null));
   }
 
   public static Map<String, Object> getManifestProperties(byte[] bytes, String[] demands) throws IOException {
@@ -64,18 +45,78 @@ public class ManifestReader {
     return new ManifestReader(apk, demands).properties;
   }
 
+  public static Map<String, String> getApkIdentity(byte[] bytes) throws IOException {
+    if (bytes == null || bytes.length > MAX_MANIFEST_BYTES) {
+      throw new IOException("Invalid manifest size");
+    }
+    Map<String, String> identity = new ArrayMap<>();
+    new AxmlReader(bytes).accept(new AxmlVisitor() {
+      private boolean visitedRoot;
+
+      @Override
+      public NodeVisitor child(String ns, String name) {
+        if (visitedRoot || ns != null || !"manifest".equals(name)) {
+          throw new IllegalArgumentException("Invalid manifest root");
+        }
+        visitedRoot = true;
+        return new NodeVisitor() {
+          @Override
+          public void attr(String ns, String name, int resourceId, String raw, Res_value value) {
+            boolean text = "package".equals(name) || "split".equals(name);
+            boolean version = "versionCode".equals(name) || "versionCodeMajor".equals(name);
+            if (!text && !version) return;
+            if (text ? ns != null : !"http://schemas.android.com/apk/res/android".equals(ns)) return;
+            if (text ? value.type != Res_value.TYPE_STRING
+                : value.type != Res_value.TYPE_INT_DEC && value.type != Res_value.TYPE_INT_HEX) {
+              throw new IllegalArgumentException("Invalid APK identity attribute");
+            }
+            if (identity.put(name, value.toString()) != null) {
+              throw new IllegalArgumentException("Duplicate APK identity attribute");
+            }
+          }
+        };
+      }
+    });
+    return identity;
+  }
+
   public static byte[] getBytesFromInputStream(InputStream inputStream) {
     try (ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-      byte[] b = new byte[1024];
-      int n;
-      while ((n = inputStream.read(b)) != -1) {
-        bos.write(b, 0, n);
+      if (IOUtils.copyLarge(inputStream, bos, 0, MAX_MANIFEST_BYTES) == MAX_MANIFEST_BYTES
+          && inputStream.read() != -1) {
+        throw new IOException("Manifest exceeds size limit");
       }
       return bos.toByteArray();
     } catch (Exception e) {
       Timber.w(e);
     }
     return null;
+  }
+
+  static void acceptManifest(File apk, Supplier<NodeVisitor> visitor) {
+    try (IZipFile zip = new ZipFileCompat(apk)) {
+      ZipEntry entry = zip.getEntry("AndroidManifest.xml");
+      if (entry == null || entry.getSize() > MAX_MANIFEST_BYTES) return;
+      try (InputStream input = zip.getInputStream(entry)) {
+        acceptManifest(getBytesFromInputStream(input), visitor);
+      }
+    } catch (Exception e) {
+      Timber.w(e);
+    }
+  }
+
+  static void acceptManifest(byte[] bytes, Supplier<NodeVisitor> visitor) {
+    if (bytes == null || bytes.length > MAX_MANIFEST_BYTES) return;
+    try {
+      new AxmlReader(bytes).accept(new AxmlVisitor() {
+        @Override
+        public NodeVisitor child(String ns, String name) {
+          return visitor.get();
+        }
+      });
+    } catch (Exception e) {
+      Timber.w(e);
+    }
   }
 
   private boolean contains(String name) {
@@ -85,39 +126,42 @@ public class ManifestReader {
     return false;
   }
 
-  private class ManifestTagVisitor extends NodeVisitor {
-    public String name = null;
-    public Object value = null;
-
+  private class ManifestTagVisitor extends AttributeTagVisitor {
     public ManifestTagVisitor(NodeVisitor child) {
-      super(child);
+      super(child, true);
     }
 
     @Override
     public NodeVisitor child(String ns, String name) {
       NodeVisitor child = super.child(ns, name);
       return switch (name) {
-        case "application" -> new ApplicationTagVisitor(child);
-        case "uses-sdk" -> new UsesSdkTagVisitor(child);
+        case "application" -> new AttributeTagVisitor(child, true);
+        case "uses-sdk" -> new AttributeTagVisitor(child, false);
         case "overlay" -> {
           properties.put("overlay", true);
-          yield new OverlayTagVisitor(child);
+          yield new AttributeTagVisitor(child, false);
         }
         default -> child;
       };
+    }
+  }
+
+  private class AttributeTagVisitor extends NodeVisitor {
+    private final boolean writeOnAttribute;
+    private String name;
+    private Object value;
+
+    public AttributeTagVisitor(NodeVisitor child, boolean writeOnAttribute) {
+      super(child);
+      this.writeOnAttribute = writeOnAttribute;
     }
 
     @Override
     public void attr(String ns, String name, int resourceId, String raw, Res_value value) {
       if (contains(name)) {
         this.name = name;
-        if (value.type == Res_value.TYPE_REFERENCE) {
-          this.value = value.data;
-        } else {
-          this.value = value.toString();
-        }
-
-        if (name != null && value.type != Res_value.TYPE_NULL) {
+        this.value = value.type == Res_value.TYPE_REFERENCE ? value.data : value.toString();
+        if (writeOnAttribute && name != null && value.type != Res_value.TYPE_NULL) {
           properties.put(name, this.value);
         }
       }
@@ -130,100 +174,6 @@ public class ManifestReader {
         properties.put(name, value);
       }
       super.end();
-    }
-
-    private class ApplicationTagVisitor extends NodeVisitor {
-      public String name = null;
-      public Object value = null;
-
-      public ApplicationTagVisitor(NodeVisitor child) {
-        super(child);
-      }
-
-      @Override
-      public void attr(String ns, String name, int resourceId, String raw, Res_value value) {
-        if (contains(name)) {
-          this.name = name;
-          if (value.type == Res_value.TYPE_REFERENCE) {
-            this.value = value.data;
-          } else {
-            this.value = value.toString();
-          }
-
-          if (name != null && value.type != Res_value.TYPE_NULL) {
-            properties.put(name, this.value);
-          }
-        }
-        super.attr(ns, name, resourceId, raw, value);
-      }
-
-      @Override
-      public void end() {
-        if (name != null && value != null) {
-          properties.put(name, value);
-        }
-        super.end();
-      }
-    }
-
-    private class UsesSdkTagVisitor extends NodeVisitor {
-      public String name = null;
-      public Object value = null;
-
-      public UsesSdkTagVisitor(NodeVisitor child) {
-        super(child);
-      }
-
-      @Override
-      public void attr(String ns, String name, int resourceId, String raw, Res_value value) {
-        if (contains(name)) {
-          this.name = name;
-          if (value.type == Res_value.TYPE_REFERENCE) {
-            this.value = value.data;
-          } else {
-            this.value = value.toString();
-          }
-        }
-        super.attr(ns, name, resourceId, raw, value);
-      }
-
-      @Override
-      public void end() {
-        if (name != null && value != null) {
-          properties.put(name, value);
-        }
-        super.end();
-      }
-    }
-
-    private class OverlayTagVisitor extends NodeVisitor {
-      public String name = null;
-      public Object value = null;
-
-      public OverlayTagVisitor(NodeVisitor child) {
-        super(child);
-      }
-
-      @Override
-      public void attr(String ns, String name, int resourceId, String raw, Res_value value) {
-        if (contains(name)) {
-          this.name = name;
-          if (value.type == Res_value.TYPE_REFERENCE) {
-            this.value = value.data;
-          } else {
-            this.value = value.toString();
-          }
-        }
-        super.attr(ns, name, resourceId, raw, value);
-      }
-
-      @Override
-      public void end() {
-        if (name != null && value != null) {
-          properties.put(name, value);
-        }
-        super.end();
-      }
     }
   }
 }

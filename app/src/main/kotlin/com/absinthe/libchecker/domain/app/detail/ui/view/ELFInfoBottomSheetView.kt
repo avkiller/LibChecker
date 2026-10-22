@@ -1,0 +1,144 @@
+package com.absinthe.libchecker.domain.app.detail.ui.view
+
+import android.content.Context
+import android.util.TypedValue
+import android.view.ContextThemeWrapper
+import android.view.Gravity
+import android.widget.FrameLayout
+import androidx.appcompat.widget.AppCompatImageView
+import androidx.appcompat.widget.AppCompatTextView
+import coil.load
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.domain.app.detail.model.DetailInfoItemDisplay
+import com.absinthe.libchecker.domain.app.detail.model.DetailInfoTextStyle
+import com.absinthe.libchecker.domain.app.detail.model.ElfDetailBottomSheetState
+import com.absinthe.libchecker.ui.adapter.BindOnlyAdapter
+import com.absinthe.libchecker.ui.adapter.addSpacingDecoration
+import com.absinthe.libchecker.ui.app.BottomSheetRecyclerView
+import com.absinthe.libchecker.utils.extensions.dp
+import com.absinthe.libchecker.view.app.BottomSheetScaffoldView
+import com.absinthe.libraries.utils.manager.SystemBarManager
+
+class ELFInfoBottomSheetView(context: Context) : BottomSheetScaffoldView(context) {
+
+  private val icon = AppCompatImageView(context).apply {
+    val iconSize = 48.dp
+    layoutParams = LayoutParams(iconSize, iconSize)
+    setBackgroundResource(R.drawable.bg_circle_outline)
+    importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+  }
+
+  private val title = AppCompatTextView(
+    ContextThemeWrapper(
+      context,
+      R.style.TextView_SansSerifCondensedMedium
+    )
+  ).apply {
+    layoutParams = LayoutParams(
+      LayoutParams.WRAP_CONTENT,
+      LayoutParams.WRAP_CONTENT
+    ).also {
+      it.topMargin = 4.dp
+    }
+    gravity = Gravity.CENTER
+    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+  }
+
+  private val contentAdapter = BindOnlyAdapter(::DetailInfoItemView, DetailInfoItemView::bind)
+
+  private val contentView = BottomSheetRecyclerView(context).apply {
+    configureVerticalList()
+    layoutParams = FrameLayout.LayoutParams(
+      FrameLayout.LayoutParams.MATCH_PARENT,
+      FrameLayout.LayoutParams.WRAP_CONTENT
+    )
+    adapter = contentAdapter
+    addSpacingDecoration(4.dp)
+  }
+
+  init {
+    gravity = Gravity.CENTER_HORIZONTAL
+    val padding = 16.dp
+    setPadding(
+      padding,
+      padding,
+      padding,
+      (padding - SystemBarManager.navigationBarSize).coerceAtLeast(0)
+    )
+    header.title.text = context.getString(R.string.lib_detail_elf_info)
+    addView(icon)
+    addView(title)
+    addView(contentView)
+  }
+
+  fun bind(state: ElfDetailBottomSheetState) {
+    title.text = state.title
+    icon.load(state.iconRes) {
+      crossfade(true)
+    }
+    contentAdapter.setList(
+      when (state) {
+        is ElfDetailBottomSheetState.Loading -> buildLoadingItems()
+        is ElfDetailBottomSheetState.Content -> buildContentItems(state)
+      }
+    )
+  }
+
+  private fun buildLoadingItems(): List<DetailInfoItemDisplay> {
+    val loading = context.getString(R.string.loading)
+    return listOf(
+      detailItem(
+        iconRes = R.drawable.ic_content,
+        tipRes = R.string.lib_detail_dependency_tip,
+        text = loading
+      ),
+      detailItem(
+        iconRes = R.drawable.ic_content,
+        tipRes = R.string.lib_detail_entry_points_tip,
+        text = loading
+      ),
+      detailItem(
+        iconRes = R.drawable.ic_no,
+        tipRes = R.string.lib_detail_optimization_tip,
+        text = context.getString(R.string.lib_detail_optimization_off)
+      )
+    )
+  }
+
+  private fun buildContentItems(state: ElfDetailBottomSheetState.Content): List<DetailInfoItemDisplay> {
+    return listOf(
+      detailItem(
+        iconRes = R.drawable.ic_content,
+        tipRes = R.string.lib_detail_dependency_tip,
+        text = state.dependenciesText.takeIf(String::isNotEmpty)
+          ?: context.getString(R.string.empty_list)
+      ),
+      detailItem(
+        iconRes = R.drawable.ic_content,
+        tipRes = R.string.lib_detail_entry_points_tip,
+        text = state.entryPointsText.takeIf(String::isNotEmpty)
+          ?: context.getString(R.string.empty_list)
+      ),
+      detailItem(
+        iconRes = if (state.isStripped) R.drawable.ic_yes else R.drawable.ic_no,
+        tipRes = R.string.lib_detail_optimization_tip,
+        text = context.getString(
+          if (state.isStripped) {
+            R.string.lib_detail_optimization_on
+          } else {
+            R.string.lib_detail_optimization_off
+          }
+        )
+      )
+    )
+  }
+
+  private fun detailItem(iconRes: Int, tipRes: Int, text: String): DetailInfoItemDisplay {
+    return DetailInfoItemDisplay(
+      iconRes = iconRes,
+      tipRes = tipRes,
+      textStyle = DetailInfoTextStyle.TITLE,
+      text = text
+    )
+  }
+}

@@ -55,21 +55,22 @@ object Constants {
   const val PREF_TELEGRAM = "tg"
   const val PREF_ANONYMOUS_ANALYTICS = "analytics"
   const val PREF_CLOUD_RULES = "cloudRules"
+  const val PREF_LEGACY_SNAPSHOT_DETAIL = "legacySnapshotDetail"
   const val PREF_SNAPSHOT_KEEP = "snapshotKeep"
+  const val PREF_GITHUB_API_TOKEN = "githubApiToken"
+  const val PREF_GITHUB_API_TOKEN_VERSION = "githubApiTokenVersion"
 
   const val PREF_LIB_SORT_MODE = "libSortMode"
   const val PREF_PROCESS_MODE = "processMode"
   const val PREF_SNAPSHOT_TIMESTAMP = "snapshotTimestamp"
   const val PREF_DISTRIBUTION_UPDATE_TIMESTAMP = "distributionUpdateTimestamp"
 
-  const val PREF_LOCAL_BACKUP = "localBackup"
-  const val PREF_LOCAL_RESTORE = "localRestore"
-
   const val PREF_LOCALE = "locale"
 
   const val PREF_DEBUG_MODE = "debugMode"
 
   const val PREF_DARK_MODE = "darkMode"
+  const val PREF_AMOLED_THEME = "amoledTheme"
   const val DARK_MODE_OFF = "off"
   const val DARK_MODE_ON = "on"
   const val DARK_MODE_FOLLOW_SYSTEM = "system"
@@ -93,6 +94,8 @@ object Constants {
   const val PREF_UUID = "uuid"
   const val PREF_ADVANCED_OPTIONS = "advancedOptions"
   const val PREF_ITEM_ADVANCED_OPTIONS = "itemAdvancedOptions"
+  const val PREF_LIB_REF_PINCH_HINT_SHOWN = "libRefPinchHintShown"
+  const val PREF_LIB_REF_TREEMAP = "libRefTreemap"
   const val PREF_LIB_REF_OPTIONS = "libRefOptions"
   const val PREF_SNAPSHOT_OPTIONS = "snapshotOptions"
 
@@ -104,6 +107,9 @@ object Constants {
   const val PREF_RULE_LANGUAGE = "ruleLanguage"
   const val PREF_SNAPSHOT_AUTO_REMOVE_THRESHOLD = "snapshotAutoRemoveThreshold"
   const val PREF_LONG_TAP_SHARE_BUTTON_TIP = "longTapShareButtonTip"
+
+  const val PREF_BLUR_DESIGN = "blurDesign"
+  const val PREF_FLOATING_NAV_BAR = "floatingNavBar"
 
   const val GET_INSTALLED_APPS = "com.android.permission.GET_INSTALLED_APPS"
 
@@ -124,8 +130,6 @@ object Constants {
   }
 
   object PackageNames {
-    const val MATERIAL_FILES = "me.zhanghai.android.files"
-    const val SHIZUKU = "moe.shizuku.privileged.api"
     const val SYSTEMUI = "com.android.systemui"
     const val ANYWHERE_ = "com.absinthe.anywhere_"
   }

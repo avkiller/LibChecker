@@ -3,45 +3,51 @@ package com.absinthe.libchecker.ui.base
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.app.Dialog
-import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.view.Window
-import android.view.WindowManager
+import android.view.animation.AccelerateDecelerateInterpolator
 import androidx.core.animation.doOnEnd
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.doOnLayout
+import androidx.core.view.updatePadding
 import androidx.fragment.app.FragmentManager
 import androidx.interpolator.view.animation.FastOutSlowInInterpolator
+import com.absinthe.libchecker.R as AppR
+import com.absinthe.libchecker.utils.OsUtils
+import com.absinthe.libchecker.view.app.BottomSheetBackgroundDrawable
+import com.absinthe.libchecker.view.app.IHeaderView
 import com.absinthe.libraries.utils.R
 import com.absinthe.libraries.utils.utils.UiUtils
-import com.absinthe.libraries.utils.view.BottomSheetHeaderView
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import com.google.android.material.shape.MaterialShapeDrawable
-import com.google.android.material.shape.ShapeAppearanceModel
-import kotlin.math.roundToInt
 import timber.log.Timber
 
-abstract class BaseBottomSheetViewDialogFragment<T : View> :
+abstract class BaseBottomSheetViewDialogFragment<T> :
   BottomSheetDialogFragment(),
-  View.OnLayoutChangeListener {
+  View.OnLayoutChangeListener where T : View, T : IHeaderView {
 
   var animationDuration = 350L
   var maxPeekHeightPercentage = 0f
   var maxPeekSize: Int = 0
+  var isInitialLandscapeExpansionEnabled = true
 
   private var _root: T? = null
   private var isHandlerActivated = false
+  private var isExternalHeightAnimationRunning = false
   private var animator: ValueAnimator = ObjectAnimator()
-  private val supportsBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-  private val maxBlurRadius = 64
+  private val supportsBlur = OsUtils.atLeastS()
+  private val maxBlurRadius = 80f
+  private val blurInterpolator = AccelerateDecelerateInterpolator()
   private var maxDimAmount: Float = 0f
   private var dialogWindow: Window? = null
+  private var blurController: WindowBlurCompatController? = null
   private val behavior by lazy { BottomSheetBehavior.from(root.parent as View) }
   private val bottomSheetCallback = object : BottomSheetBehavior.BottomSheetCallback() {
     override fun onStateChanged(bottomSheet: View, newState: Int) {
@@ -49,14 +55,14 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
         BottomSheetBehavior.STATE_DRAGGING -> {
           if (!isHandlerActivated) {
             isHandlerActivated = true
-            getHeaderView().onHandlerActivated(true)
+            root.getHeaderView().onHandlerActivated(true)
           }
         }
 
         BottomSheetBehavior.STATE_COLLAPSED -> {
           if (isHandlerActivated) {
             isHandlerActivated = false
-            getHeaderView().onHandlerActivated(false)
+            root.getHeaderView().onHandlerActivated(false)
           }
           updateBlurAndDimForOffset(0f)
         }
@@ -64,10 +70,9 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
         BottomSheetBehavior.STATE_EXPANDED -> {
           if (isHandlerActivated) {
             isHandlerActivated = false
-            getHeaderView().onHandlerActivated(false)
+            root.getHeaderView().onHandlerActivated(false)
           }
           updateBlurAndDimForOffset(1f)
-          bottomSheet.background = createMaterialShapeDrawable(bottomSheet)
         }
 
         BottomSheetBehavior.STATE_HALF_EXPANDED -> {
@@ -75,7 +80,7 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
         }
 
         BottomSheetBehavior.STATE_HIDDEN -> {
-          resetBlurRadius()
+          finishBlurAnimation()
         }
 
         else -> {
@@ -92,7 +97,9 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
 
   abstract fun initRootView(): T
   abstract fun init()
-  abstract fun getHeaderView(): BottomSheetHeaderView
+  protected open fun getHeaderContentSpacing(): Int {
+    return resources.getDimensionPixelSize(AppR.dimen.bottom_sheet_header_content_spacing)
+  }
 
   override fun onCreateDialog(savedInstanceState: Bundle?): Dialog = object : BottomSheetDialog(requireContext(), theme) {
     override fun onAttachedToWindow() {
@@ -108,9 +115,11 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
         maxDimAmount = it.attributes.dimAmount
 
         if (supportsBlur) {
-          it.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
-          it.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-          updateBlurAndDimForOffset(1f)
+          blurController?.stop()
+          blurController = WindowBlurCompatController(requireActivity(), it).also { controller ->
+            controller.start()
+          }
+          updateBlurAndDimFraction(1f, animateBlur = true)
         }
       }
 
@@ -126,18 +135,28 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
     container: ViewGroup?,
     savedInstanceState: Bundle?
   ): View? {
-    _root = initRootView().apply { applyRootView(this) }
+    _root = initRootView().also { root ->
+      root.post { updateMaxPeekSize() }
+    }
     init()
+    root.getHeaderView().title.updatePadding(
+      bottom = getHeaderContentSpacing()
+    )
     return _root
   }
 
   override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
     super.onViewCreated(view, savedInstanceState)
+    view.setOnApplyWindowInsetsListener { _, insets ->
+      ((view.parent as? View)?.background as? BottomSheetBackgroundDrawable)
+        ?.updateCorners(view.rootWindowInsets)
+      insets
+    }
     view.viewTreeObserver.addOnGlobalLayoutListener(object :
       ViewTreeObserver.OnGlobalLayoutListener {
       override fun onGlobalLayout() {
         view.viewTreeObserver.removeOnGlobalLayoutListener(this)
-        activity?.window?.takeIf { isLandscape(it) }?.run {
+        activity?.window?.takeIf { isInitialLandscapeExpansionEnabled && isLandscape(it) }?.run {
           behavior.setState(BottomSheetBehavior.STATE_EXPANDED)
         }
       }
@@ -146,6 +165,14 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
 
   override fun onStart() {
     super.onStart()
+    (root.parent as View).doOnLayout { bottomSheet ->
+      // Install after Material's first layout, independently of its expanded-corner animation.
+      val background = bottomSheet.background as? BottomSheetBackgroundDrawable
+        ?: BottomSheetBackgroundDrawable(bottomSheet.context, bottomSheet.background as MaterialShapeDrawable)
+          .also { bottomSheet.background = it }
+      background.updateCorners(bottomSheet.rootWindowInsets)
+    }
+    updateMaxPeekSize()
     behavior.addBottomSheetCallback(bottomSheetCallback)
     root.addOnLayoutChangeListener(this)
   }
@@ -157,7 +184,8 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
 
   override fun onDetach() {
     animator.cancel()
-    resetBlurRadius()
+    finishBlurAnimation()
+    blurController = null
     dialogWindow = null
     super.onDetach()
   }
@@ -165,7 +193,8 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
   override fun onDestroyView() {
     animator.cancel()
     root.removeOnLayoutChangeListener(this)
-    resetBlurRadius()
+    finishBlurAnimation()
+    blurController = null
     _root = null
     super.onDestroyView()
   }
@@ -189,43 +218,41 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
     oldRight: Int,
     oldBottom: Int
   ) {
-    if ((bottom - top) != (oldBottom - oldTop)) {
-      enqueueAnimation {
-        animateHeight(from = oldBottom - oldTop, to = bottom - top, onEnd = { })
-      }
+    val height = bottom - top
+    val oldHeight = oldBottom - oldTop
+    if (height == oldHeight) return
+
+    if (oldHeight == 0) {
+      updateMaxPeekSize()
+      setClippedHeight(height)
+      return
+    }
+
+    if (isExternalHeightAnimationRunning) {
+      setClippedHeight(height)
+      return
+    }
+
+    enqueueAnimation {
+      animateHeight(from = oldHeight, to = height, onEnd = { })
     }
   }
 
-  private fun applyRootView(root: T) {
-    root.post {
-      if (maxPeekHeightPercentage >= 0f) {
-        maxPeekSize = ((dialog?.window?.decorView?.height ?: 0) * maxPeekHeightPercentage).toInt()
-      } else {
-        throw IllegalArgumentException("maxPeekHeightPercentage must be greater than 0")
-      }
+  protected fun setExternalHeightAnimationRunning(running: Boolean) {
+    if (running) {
+      animator.cancel()
+    }
+    isExternalHeightAnimationRunning = running
+    if (root.isLaidOut) {
+      setClippedHeight(root.height)
     }
   }
 
-  private fun createMaterialShapeDrawable(bottomSheet: View): MaterialShapeDrawable {
-    // Create a ShapeAppearanceModel with the same shapeAppearanceOverlay used in the style
-    val shapeAppearanceModel =
-      ShapeAppearanceModel.builder(
-        context,
-        0,
-        com.absinthe.libchecker.R.style.App_ShapeAppearance_M3E_BottomSheetDialog
-      )
-        .build()
-
-    // Create a new MaterialShapeDrawable (you can't use the original MaterialShapeDrawable in the BottomSheet)
-    val currentMaterialShapeDrawable = bottomSheet.background as MaterialShapeDrawable
-    return MaterialShapeDrawable(shapeAppearanceModel).apply {
-      // Copy the attributes in the new MaterialShapeDrawable
-      initializeElevationOverlay(context)
-      fillColor = currentMaterialShapeDrawable.fillColor
-      tintList = currentMaterialShapeDrawable.tintList
-      elevation = currentMaterialShapeDrawable.elevation
-      strokeWidth = currentMaterialShapeDrawable.strokeWidth
-      strokeColor = currentMaterialShapeDrawable.strokeColor
+  private fun updateMaxPeekSize() {
+    if (maxPeekHeightPercentage >= 0f) {
+      maxPeekSize = ((dialog?.window?.decorView?.height ?: 0) * maxPeekHeightPercentage).toInt()
+    } else {
+      throw IllegalArgumentException("maxPeekHeightPercentage must be greater than 0")
     }
   }
 
@@ -255,8 +282,13 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
   }
 
   private fun setClippedHeight(newHeight: Int) {
-    if (newHeight <= maxPeekSize || maxPeekSize == 0) {
-      behavior.peekHeight = newHeight
+    val clippedHeight = if (maxPeekSize > 0) {
+      newHeight.coerceAtMost(maxPeekSize)
+    } else {
+      newHeight
+    }
+    if (behavior.peekHeight != clippedHeight) {
+      behavior.peekHeight = clippedHeight
     }
   }
 
@@ -265,27 +297,30 @@ abstract class BaseBottomSheetViewDialogFragment<T : View> :
     return view.width >= view.height
   }
 
-  private fun updateBlurAndDimFraction(fraction: Float) {
+  private fun updateBlurAndDimFraction(fraction: Float, animateBlur: Boolean = false) {
     if (!supportsBlur) return
     val window = dialogWindow ?: return
     val clamped = fraction.coerceIn(0f, 1f)
-    val targetRadius = (maxBlurRadius * clamped).roundToInt()
+    val targetRadius = maxBlurRadius * blurInterpolator.getInterpolation(clamped)
     val targetDimAmount = maxDimAmount * clamped.coerceAtLeast(0.1f)
 
+    if (animateBlur) {
+      blurController?.animateBlurRadius(targetRadius, animationDuration)
+    } else {
+      blurController?.setBlurRadius(targetRadius)
+    }
     val layoutParams = window.attributes
-    if (layoutParams.blurBehindRadius == targetRadius && layoutParams.dimAmount == targetDimAmount) return
-    layoutParams.blurBehindRadius = targetRadius
+    if (layoutParams.dimAmount == targetDimAmount) return
     layoutParams.dimAmount = targetDimAmount
     window.attributes = layoutParams
   }
 
   private fun updateBlurAndDimForOffset(offset: Float) {
     if (offset.isNaN()) return
-    val normalized = ((offset + 1f) / 1f).coerceIn(0f, 1f)
-    updateBlurAndDimFraction(normalized)
+    updateBlurAndDimFraction((offset + 1f).coerceIn(0f, 1f))
   }
 
-  private fun resetBlurRadius() {
-    updateBlurAndDimFraction(0f)
+  private fun finishBlurAnimation() {
+    blurController?.finishWithAnimation(animationDuration)
   }
 }

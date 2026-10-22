@@ -1,0 +1,408 @@
+package com.absinthe.libchecker.domain.app.detail.ui
+
+import android.animation.ValueAnimator
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ApplicationInfo
+import android.graphics.Color
+import android.graphics.RenderEffect
+import android.graphics.RuntimeShader
+import android.graphics.Shader
+import android.graphics.drawable.AdaptiveIconDrawable
+import android.graphics.drawable.Drawable
+import android.os.Build
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ImageView
+import androidx.annotation.RequiresApi
+import androidx.appcompat.widget.AppCompatImageView
+import androidx.core.animation.doOnEnd
+import androidx.core.graphics.drawable.toBitmap
+import androidx.core.view.doOnPreDraw
+import androidx.interpolator.view.animation.FastOutSlowInInterpolator
+import com.absinthe.libchecker.R
+import com.absinthe.libchecker.domain.app.detail.ui.view.AdaptiveIconLayerCardView
+import com.absinthe.libchecker.domain.app.detail.ui.view.copyDrawable
+import com.absinthe.libchecker.utils.OsUtils
+import com.absinthe.libchecker.utils.extensions.copyBitmapToClipboard
+import com.absinthe.libchecker.utils.extensions.copyToClipboard
+import com.absinthe.libchecker.utils.extensions.dp
+
+fun ImageView.setDetailIconLongClick(applicationInfo: ApplicationInfo?, blurView: View) {
+  if (OsUtils.atLeastT()) {
+    post(ProgressiveBlurShaderCache::prewarm)
+  }
+  setOnLongClickListener {
+    if (!OsUtils.atLeastO()) {
+      copyToClipboard()
+      return@setOnLongClickListener true
+    }
+    val adaptiveIcon = applicationInfo?.loadIcon(context.packageManager) as? AdaptiveIconDrawable
+    if (adaptiveIcon == null) {
+      copyToClipboard()
+    } else {
+      showAdaptiveIconLayerOverlay(adaptiveIcon, blurView)
+    }
+    true
+  }
+}
+
+@RequiresApi(Build.VERSION_CODES.O)
+private fun ImageView.showAdaptiveIconLayerOverlay(icon: AdaptiveIconDrawable, blurView: View) {
+  val activity = context.findActivity()
+  if (activity == null || !icon.hasCompleteLayers()) {
+    copyToClipboard()
+    return
+  }
+  AdaptiveIconLayerOverlay(activity, icon, this, blurView).show()
+}
+
+@RequiresApi(Build.VERSION_CODES.O)
+internal fun AdaptiveIconDrawable.hasCompleteLayers(): Boolean {
+  return background != null && foreground != null
+}
+
+private tailrec fun Context.findActivity(): Activity? {
+  return when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+  }
+}
+
+@RequiresApi(Build.VERSION_CODES.O)
+private class AdaptiveIconLayerOverlay(
+  private val activity: Activity,
+  private val icon: AdaptiveIconDrawable,
+  private val sourceView: ImageView,
+  private val blurView: View
+) {
+
+  private val context = activity
+  private var itemSize = sourceView.width.takeIf { it > 0 } ?: 56.dp
+  private val layerGap = 6.dp
+  private val edgePadding = 16.dp
+  private val maxBlurRadius = 24f
+  private val originalBlurViewAlpha = blurView.alpha
+  private var blurAnimator: ValueAnimator? = null
+  private var currentBlurRadius = 0f
+  private var isClosing = false
+  private var collapseX = 0f
+  private var collapseY = 0f
+  private val overlay = FrameLayout(context).apply {
+    layoutParams = ViewGroup.LayoutParams(
+      ViewGroup.LayoutParams.MATCH_PARENT,
+      ViewGroup.LayoutParams.MATCH_PARENT
+    )
+    clipChildren = false
+    clipToPadding = false
+    setBackgroundColor(Color.TRANSPARENT)
+    isClickable = true
+    setOnClickListener { close() }
+  }
+  private val originalView = createIconView(
+    sourceView.drawable?.copyDrawable() ?: icon.copyDrawable()
+  ).apply {
+    contentDescription = context.getString(R.string.adaptive_icon_copy_full)
+    setOnClickListener {
+      context.copyBitmapToClipboard(icon.toBitmap(itemSize, itemSize))
+    }
+  }
+  private val layerCardView = AdaptiveIconLayerCardView(
+    context = context,
+    icon = icon,
+    onBackgroundClick = {
+      context.copyBitmapToClipboard(icon.background.toBitmap(itemSize, itemSize))
+    },
+    onForegroundClick = {
+      context.copyBitmapToClipboard(icon.foreground.toBitmap(itemSize, itemSize))
+    }
+  ).apply {
+    alpha = 0f
+  }
+  private val layerViews = listOf(
+    originalView,
+    layerCardView
+  )
+
+  init {
+    layerViews.forEach(overlay::addView)
+  }
+
+  fun show() {
+    val decorView = activity.window.decorView as? ViewGroup ?: return
+    updateLayerSize(decorView.width)
+    decorView.addView(overlay)
+    overlay.doOnPreDraw { startLayerAnimation() }
+  }
+
+  private fun createIconView(drawable: Drawable): AppCompatImageView {
+    return AppCompatImageView(context).apply {
+      layoutParams = FrameLayout.LayoutParams(itemSize, itemSize)
+      scaleType = ImageView.ScaleType.FIT_CENTER
+      setImageDrawable(drawable)
+      isClickable = true
+    }
+  }
+
+  private fun startLayerAnimation() {
+    val sourcePosition = resolveSourcePosition()
+    collapseX = sourcePosition.x
+    collapseY = sourcePosition.y
+
+    applyBlur()
+    placeLayersAt(sourcePosition.x, sourcePosition.y)
+    animateLayerRow(sourcePosition.x, sourcePosition.y)
+  }
+
+  private fun resolveSourcePosition(): LayerPosition {
+    val rootLocation = IntArray(2)
+    val sourceLocation = IntArray(2)
+    overlay.getLocationOnScreen(rootLocation)
+    sourceView.getLocationOnScreen(sourceLocation)
+    return LayerPosition(
+      x = (sourceLocation[0] - rootLocation[0]).toFloat(),
+      y = (sourceLocation[1] - rootLocation[1]).toFloat()
+    )
+  }
+
+  private fun updateLayerSize(windowWidth: Int) {
+    itemSize = sourceView.width.coerceAtLeast(1)
+    originalView.layoutParams = FrameLayout.LayoutParams(itemSize, itemSize)
+    val maxCardWidth = (
+      windowWidth -
+        edgePadding * 2 -
+        itemSize -
+        layerGap
+      ).coerceAtLeast(1)
+    layerCardView.fitPreviewSize(itemSize, maxCardWidth)
+  }
+
+  private fun placeLayersAt(x: Float, y: Float) {
+    layerViews.forEach { child ->
+      child.x = x
+      child.y = resolveLayerTop(child, y)
+      if (child === layerCardView) {
+        child.pivotY = layerCardView.previewCenterOffset.toFloat()
+      }
+      val initialScale = if (child === originalView) 1f else 0.92f
+      child.scaleX = initialScale
+      child.scaleY = initialScale
+    }
+  }
+
+  private fun animateLayerRow(startX: Float, rowY: Float) {
+    val rowWidth = layerViews.sumOf { it.width } + layerGap * (layerViews.size - 1)
+    val rowStartX = if (startX + rowWidth <= overlay.width - edgePadding) {
+      startX
+    } else {
+      (overlay.width - rowWidth - edgePadding).coerceAtLeast(edgePadding).toFloat()
+    }
+
+    var nextX = rowStartX
+    layerViews.forEach { view ->
+      animateTo(
+        view = view,
+        x = nextX,
+        y = resolveLayerTop(view, rowY),
+        endAlpha = 1f,
+        endScale = 1f,
+        endAction = if (view === layerCardView) {
+          { layerCardView.animateBackgroundOutsideDisintegration() }
+        } else {
+          null
+        }
+      )
+      nextX += view.width + layerGap
+    }
+  }
+
+  private fun resolveLayerTop(view: View, rowY: Float): Float {
+    val centerOffset = if (view === layerCardView) {
+      layerCardView.previewCenterOffset.toFloat()
+    } else {
+      view.height / 2f
+    }
+    return calculateAlignedLayerTop(rowY, itemSize, centerOffset)
+  }
+
+  private fun animateTo(
+    view: View,
+    x: Float,
+    y: Float,
+    endAlpha: Float,
+    endScale: Float,
+    endAction: (() -> Unit)? = null
+  ) {
+    val animator = view.animate()
+      .x(x)
+      .y(y)
+      .alpha(endAlpha)
+      .scaleX(endScale)
+      .scaleY(endScale)
+      .setDuration(ANIMATION_DURATION_MS)
+      .setInterpolator(FastOutSlowInInterpolator())
+    if (endAction != null) {
+      animator.withEndAction { endAction() }
+    }
+    animator.start()
+  }
+
+  private fun applyBlur() {
+    if (shouldHideCollapsingToolbarInsteadOfBlur()) {
+      animateBlurViewAlpha(0f)
+      return
+    }
+    blurAnimator = ValueAnimator.ofFloat(0f, maxBlurRadius).apply {
+      duration = ANIMATION_DURATION_MS
+      interpolator = FastOutSlowInInterpolator()
+      addUpdateListener {
+        updateBlurRadius(it.animatedValue as Float)
+      }
+      start()
+    }
+  }
+
+  private fun close() {
+    if (isClosing) return
+    isClosing = true
+    collapseLayers()
+    layerCardView.finishBackgroundOutsideDisintegration()
+    blurAnimator?.cancel()
+    if (!shouldHideCollapsingToolbarInsteadOfBlur() && currentBlurRadius > 0f) {
+      blurAnimator = ValueAnimator.ofFloat(currentBlurRadius, 0f).apply {
+        duration = ANIMATION_DURATION_MS
+        interpolator = FastOutSlowInInterpolator()
+        addUpdateListener {
+          updateBlurRadius(it.animatedValue as Float)
+        }
+        doOnEnd {
+          updateBlurRadius(0f)
+          removeOverlay()
+        }
+        start()
+      }
+    } else {
+      animateBlurViewAlpha(originalBlurViewAlpha) {
+        removeOverlay()
+      }
+    }
+  }
+
+  private fun collapseLayers() {
+    originalView.bringToFront()
+    collapseLayer(originalView, ANIMATION_DURATION_MS, 1f)
+    layerViews.drop(1).forEach { child ->
+      collapseLayer(child, COLLAPSING_LAYER_FADE_DURATION_MS, 0f)
+    }
+  }
+
+  private fun collapseLayer(view: View, duration: Long, endAlpha: Float) {
+    view.animate().cancel()
+    view.animate()
+      .x(collapseX)
+      .y(resolveLayerTop(view, collapseY))
+      .alpha(endAlpha)
+      .scaleX(if (view === originalView) 1f else 0.92f)
+      .scaleY(if (view === originalView) 1f else 0.92f)
+      .setDuration(duration)
+      .setInterpolator(FastOutSlowInInterpolator())
+      .start()
+  }
+
+  private fun updateBlurRadius(radius: Float) {
+    currentBlurRadius = radius
+    if (shouldHideCollapsingToolbarInsteadOfBlur()) return
+    updateBlurView(blurView, radius)
+  }
+
+  private fun removeOverlay() {
+    blurAnimator = null
+    (overlay.parent as? ViewGroup)?.removeView(overlay)
+  }
+
+  private fun animateBlurViewAlpha(alpha: Float, endAction: (() -> Unit)? = null) {
+    blurView.animate().cancel()
+    blurView.animate()
+      .alpha(alpha)
+      .setDuration(ANIMATION_DURATION_MS)
+      .setInterpolator(FastOutSlowInInterpolator())
+      .withEndAction {
+        endAction?.invoke()
+      }
+      .start()
+  }
+
+  private fun updateBlurView(view: View, radius: Float) {
+    if (!OsUtils.atLeastS()) return
+    view.setRenderEffect(
+      if (radius > 0f) {
+        if (OsUtils.atLeastT()) {
+          createProgressiveBlurEffectOnT(view, radius)
+        } else {
+          RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+        }
+      } else {
+        null
+      }
+    )
+  }
+
+  @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+  private fun createProgressiveBlurEffectOnT(view: View, radius: Float): RenderEffect {
+    val shader = ProgressiveBlurShaderCache.get()
+    shader.setFloatUniform("size", view.width.toFloat(), view.height.toFloat())
+    shader.setFloatUniform("progress", (radius / maxBlurRadius).coerceIn(0f, 1f))
+    return RenderEffect.createChainEffect(
+      RenderEffect.createRuntimeShaderEffect(shader, "content"),
+      RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP)
+    )
+  }
+}
+
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private object ProgressiveBlurShaderCache {
+  private var shader: RuntimeShader? = null
+
+  fun prewarm() {
+    get()
+  }
+
+  fun get(): RuntimeShader {
+    return shader ?: RuntimeShader(PROGRESSIVE_BLUR_MASK_SHADER).also { shader = it }
+  }
+}
+
+private data class LayerPosition(
+  val x: Float,
+  val y: Float
+)
+
+internal fun calculateAlignedLayerTop(
+  rowTop: Float,
+  rowHeight: Int,
+  centerOffset: Float
+): Float {
+  return rowTop + rowHeight / 2f - centerOffset
+}
+
+private fun shouldHideCollapsingToolbarInsteadOfBlur(): Boolean {
+  return !OsUtils.atLeastT()
+}
+
+private const val ANIMATION_DURATION_MS = 350L
+private const val COLLAPSING_LAYER_FADE_DURATION_MS = 180L
+
+private const val PROGRESSIVE_BLUR_MASK_SHADER = """
+uniform shader content;
+uniform float2 size;
+uniform float progress;
+
+half4 main(float2 coord) {
+  float fadeStartY = size.y * 0.8;
+  float maskAlpha = 1.0 - smoothstep(fadeStartY, size.y, coord.y);
+  return content.eval(coord) * mix(1.0, maskAlpha, progress);
+}
+"""
