@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.MenuItem
 import android.view.ViewGroup
+import androidx.appcompat.content.res.AppCompatResources
 import androidx.lifecycle.lifecycleScope
 import com.absinthe.libchecker.R
 import com.absinthe.libchecker.annotation.ACTION
@@ -20,11 +21,14 @@ import com.absinthe.libchecker.domain.statistics.reference.presentation.LibRefer
 import com.absinthe.libchecker.ui.base.BaseActivity
 import com.absinthe.libchecker.utils.OsUtils
 import com.absinthe.libchecker.utils.extensions.applySystemBarsPadding
+import com.absinthe.libchecker.utils.extensions.dp
 import com.absinthe.libchecker.utils.extensions.launchDetailPage
 import com.absinthe.libchecker.view.app.BlurCoordinatorLayout
 import com.absinthe.libraries.utils.utils.AntiShakeUtils
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import me.zhanghai.android.fastscroll.FastScrollerBuilder
 import org.koin.androidx.viewmodel.ext.android.viewModel
 import rikka.widget.borderview.BorderView
@@ -47,6 +51,7 @@ class LibReferenceActivity : BaseActivity<ActivityLibReferenceBinding>() {
   private var refLabel: String? = null
   private var refType: Int = NATIVE
   private var refList: Array<String>? = null
+  private var actionBarIconJob: Job? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -89,6 +94,14 @@ class LibReferenceActivity : BaseActivity<ActivityLibReferenceBinding>() {
     supportActionBar?.apply {
       refLabel?.let { title = it }
       subtitle = refName
+    }
+    actionBarIconJob?.cancel()
+    supportActionBar?.setIcon(null)
+    val name = refName ?: return
+    val type = refType
+    actionBarIconJob = lifecycleScope.launch {
+      val icon = AppCompatResources.getDrawable(this@LibReferenceActivity, viewModel.getReferenceIcon(name, type))
+      supportActionBar?.setIcon(icon?.boundedReferenceIcon(24.dp))
     }
   }
 

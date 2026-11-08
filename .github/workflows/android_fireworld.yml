@@ -6,7 +6,7 @@ on:
       tag_name:
         description: 'Version for this release'
         type: string
-        default: '2.5.4'
+        default: '2.5.5'
         required: true
 
 env:
@@ -215,7 +215,7 @@ jobs:
     if: false
     # if: ${{ startsWith(github.event.head_commit.message, '[skip ci]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Send commit to telegram
         uses: appleboy/telegram-action@master
         with:

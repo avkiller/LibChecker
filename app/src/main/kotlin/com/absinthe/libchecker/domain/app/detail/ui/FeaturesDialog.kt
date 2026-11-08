@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageInfo
 import android.graphics.drawable.Drawable
 import android.os.Build
+import android.text.style.ImageSpan
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
@@ -11,8 +12,12 @@ import android.widget.LinearLayout.LayoutParams
 import android.widget.ScrollView
 import androidx.annotation.OptIn
 import androidx.annotation.RequiresApi
+import androidx.appcompat.content.res.AppCompatResources
 import androidx.appcompat.widget.AppCompatImageView
 import androidx.core.text.HtmlCompat
+import androidx.core.text.bold
+import androidx.core.text.buildSpannedString
+import androidx.core.text.inSpans
 import androidx.fragment.app.FragmentActivity
 import com.absinthe.libchecker.R
 import com.absinthe.libchecker.constant.Constants
@@ -53,15 +58,40 @@ object FeaturesDialog {
   fun show(context: Context, spec: FeatureDialogSpec) {
     val icon = spec.iconTint?.let {
       UiUtils.changeDrawableColor(context, spec.iconRes, it)
-    } ?: requireNotNull(context.getDrawable(spec.iconRes))
+    } ?: requireNotNull(AppCompatResources.getDrawable(context, spec.iconRes))
     val dialog = BaseAlertDialogBuilder(context)
       .setIcon(icon)
       .setTitle(spec.titleRes)
       .setPositiveButton(android.R.string.ok, null)
 
-    spec.messageRes?.let { messageRes ->
-      dialog.setMessage(HtmlCompat.fromHtml(context.getString(messageRes), HtmlCompat.FROM_HTML_MODE_COMPACT))
+    val message = buildSpannedString {
+      spec.subtitleEntries?.forEach { entry ->
+        if (isNotEmpty()) append(", ")
+        bold { append(entry.label.resolve(context)) }
+        entry.value?.let {
+          append(" ")
+          append(it)
+        }
+      }
+      spec.messageRes?.let { messageRes ->
+        if (isNotEmpty()) append("\n\n")
+        append(HtmlCompat.fromHtml(context.getString(messageRes), HtmlCompat.FROM_HTML_MODE_COMPACT))
+      }
+      spec.items?.forEach { item ->
+        if (isNotEmpty()) append("\n\n")
+        spec.itemIconRes?.let { res ->
+          context.getDrawable(res)?.let { itemIcon ->
+            itemIcon.setBounds(0, 0, 16.dp, 16.dp)
+            inSpans(ImageSpan(itemIcon, ImageSpan.ALIGN_BASELINE)) { append("\uFFFC") }
+            append(" ")
+          }
+        }
+        bold { append(item.label.resolve(context)) }
+        append("\n")
+        append(item.value ?: context.getString(R.string.lib_permission_description_not_provided))
+      }
     }
+    if (message.isNotEmpty()) dialog.setMessage(message)
     spec.titleEntries?.let { entries ->
       val title = entries.joinToString(", ") { entry ->
         "${entry.label.resolve(context)} <b>${entry.value.orEmpty()}</b>"
