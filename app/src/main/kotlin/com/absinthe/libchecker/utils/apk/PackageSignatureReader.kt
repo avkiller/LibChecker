@@ -64,9 +64,9 @@ object PackageSignatureReader {
       }
       field(R.string.signature_algorithm_name, certificate.sigAlgName)
       field(R.string.signature_algorithm_oid, certificate.sigAlgOID)
-      field(R.string.signature_md5, bytes.md5(":"))
-      field(R.string.signature_sha1, bytes.sha1(":"))
-      field(R.string.signature_sha256, bytes.sha256(":"))
+      field(R.string.signature_md5, bytes.md5(""))
+      field(R.string.signature_sha1, bytes.sha1(""))
+      field(R.string.signature_sha256, bytes.sha256(""))
       append(context.getString(R.string.signature_char_string))
       append(":")
       append(signature.toCharsString())

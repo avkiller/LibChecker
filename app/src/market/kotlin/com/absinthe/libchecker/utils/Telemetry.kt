@@ -19,8 +19,9 @@ import timber.log.Timber
 object Telemetry {
 
   private const val UPLOAD_KEY_SHA256 = "b12e1cfbfe285849d6740018022eec2209feb28c2685df6f4d2f97dbde3b5775"
-
+  private const val ENABLED = false
   init {
+    if (!ENABLED) return
     val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
     Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
       if (isGmsCertificateException(throwable)) {
@@ -33,10 +34,11 @@ object Telemetry {
 
   private val isAnalyticsSupported by lazy {
     val context = LibCheckerApp.app
-    isGmsAvailable(context) && isOfficialPlayBuild(context)
+    ENABLED && isGmsAvailable(context) && isOfficialPlayBuild(context)
   }
 
   fun setEnable(enable: Boolean) {
+    if (!ENABLED) return
     if (isAnalyticsSupported) {
       runCatching {
         Firebase.analytics.setAnalyticsCollectionEnabled(enable)
@@ -52,6 +54,7 @@ object Telemetry {
   }
 
   fun recordException(t: Throwable) {
+    if (!ENABLED) return
     runCatching {
       Firebase.crashlytics.recordException(t)
     }.onFailure {
@@ -60,7 +63,7 @@ object Telemetry {
   }
 
   fun recordEvent(name: String, params: Map<String, Any>) {
-    if (!isAnalyticsSupported) return
+    if (!ENABLED || !isAnalyticsSupported) return
     val bundle = Bundle()
     params.forEach { (key, value) ->
       when (value) {
@@ -121,10 +124,10 @@ object Telemetry {
   }
 
   object Param {
-    const val CONTENT_TYPE = FirebaseAnalytics.Param.CONTENT_TYPE
-    const val ITEM_ID = FirebaseAnalytics.Param.ITEM_ID
-    const val SUCCESS = FirebaseAnalytics.Param.SUCCESS
-    const val VALUE = FirebaseAnalytics.Param.VALUE
-    const val CONTENT = FirebaseAnalytics.Param.CONTENT
+    const val CONTENT_TYPE = "content_type"
+    const val ITEM_ID = "item_id"
+    const val SUCCESS = "success"
+    const val VALUE = "value"
+    const val CONTENT = "content"
   }
 }
