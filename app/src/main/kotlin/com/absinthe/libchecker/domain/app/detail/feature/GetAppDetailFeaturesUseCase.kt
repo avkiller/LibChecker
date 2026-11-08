@@ -4,27 +4,30 @@ import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.AdaptiveIconDrawable
+import androidx.core.content.res.ResourcesCompat
 import com.absinthe.libchecker.app.SystemServices
 import com.absinthe.libchecker.compat.PackageManagerCompat
 import com.absinthe.libchecker.compat.ZipFileCompat
 import com.absinthe.libchecker.database.entity.Features
 import com.absinthe.libchecker.domain.app.buildmetadata.COMPOSE_VERSION_ENTRIES
+import com.absinthe.libchecker.domain.app.buildmetadata.ComposeResourcesDetector.usesComposeMultiplatformResources
 import com.absinthe.libchecker.domain.app.buildmetadata.KotlinBuildMetadata
 import com.absinthe.libchecker.domain.app.buildmetadata.KotlinBuildMetadataDetector
 import com.absinthe.libchecker.domain.app.buildmetadata.KotlinVersionInferenceHints
+import com.absinthe.libchecker.domain.app.buildmetadata.R8BuildMetadataDetector
 import com.absinthe.libchecker.domain.app.buildmetadata.readAgpVersion
 import com.absinthe.libchecker.domain.app.buildmetadata.readFirstPresentLine
 import com.absinthe.libchecker.domain.app.detail.model.AppIconItem
+import com.absinthe.libchecker.domain.app.feature.PackageFeatureDetector.getFeatures
+import com.absinthe.libchecker.domain.app.feature.PackageFeatureDetector.hasXposedModuleMetadata
+import com.absinthe.libchecker.domain.app.feature.PackageFeatureDetector.isPWA
+import com.absinthe.libchecker.domain.app.feature.PackageFeatureDetector.isPlayAppSigning
 import com.absinthe.libchecker.domain.app.model.VersionedFeature
 import com.absinthe.libchecker.domain.app.repository.AppListRepository
 import com.absinthe.libchecker.domain.app.repository.InstalledAppRepository
 import com.absinthe.libchecker.utils.OsUtils
-import com.absinthe.libchecker.utils.extensions.getFeatures
-import com.absinthe.libchecker.utils.extensions.hasXposedModuleMetadata
-import com.absinthe.libchecker.utils.extensions.isPWA
-import com.absinthe.libchecker.utils.extensions.isPageSizeCompat
-import com.absinthe.libchecker.utils.extensions.isPlayAppSigning
-import com.absinthe.libchecker.utils.extensions.usesComposeMultiplatformResources
+import com.absinthe.libchecker.utils.apk.AppFunctionReader
+import com.absinthe.libchecker.utils.elf.NativeLibraryAnalyzer.isPageSizeCompat
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -169,6 +172,11 @@ class GetAppDetailFeaturesUseCase(
       emitFeature(VersionedFeature(Features.PWA))
     }
 
+    val appFunctions = AppFunctionReader.read(packageInfo)
+    if (appFunctions.isNotEmpty()) {
+      emitFeature(VersionedFeature(Features.Ext.APP_FUNCTION, appFunctions = appFunctions))
+    }
+
     val appIcons = getAllAppIcons(packageInfo)
     onAppIcons(appIcons)
     if (appIcons.isNotEmpty()) {
@@ -201,10 +209,6 @@ class GetAppDetailFeaturesUseCase(
     emitFeature: suspend (VersionedFeature) -> Unit,
     openedZip: ZipFileCompat? = null
   ) {
-    if (!readKotlin && !readAgp && !readCompose && !readXposedMarker) {
-      return
-    }
-
     suspend fun emitFallbackFeatures() {
       if (readKotlin) {
         emitFeature(VersionedFeature(Features.KOTLIN_USED, extras = DEFAULT_KOTLIN_PLUGIN_INFO))
@@ -224,16 +228,40 @@ class GetAppDetailFeaturesUseCase(
     }
 
     suspend fun emitFromZip(zip: ZipFileCompat) {
+      val context = currentCoroutineContext()
+      val checkCancelled = { context.ensureActive() }
+      val r8 = linkedSetOf<String>()
       if (readKotlin) {
         emitFeature(
           VersionedFeature(
             Features.KOTLIN_USED,
-            extras = readKotlinBuildInfo(packageInfo, File(sourceDir), zip, isApk)
+            extras = readKotlinBuildInfo(packageInfo, File(sourceDir), zip, isApk, r8, checkCancelled)
           )
         )
+      } else {
+        r8.addAll(R8BuildMetadataDetector.detect(File(sourceDir), zip, checkCancelled = checkCancelled))
       }
-      if (readAgp) {
-        emitFeature(VersionedFeature(Features.AGP, zip.readAgpVersion()))
+      packageInfo.applicationInfo?.splitSourceDirs.orEmpty().distinct().forEach { path ->
+        context.ensureActive()
+        try {
+          ZipFileCompat(File(path)).use { splitZip ->
+            r8.addAll(R8BuildMetadataDetector.detect(File(path), splitZip) { context.ensureActive() })
+          }
+        } catch (e: CancellationException) {
+          throw e
+        } catch (_: Exception) {
+          // Keep base APK metadata if a split is unavailable.
+        }
+      }
+      val agpVersion = zip.readAgpVersion()
+      if (readAgp || agpVersion != null || r8.isNotEmpty()) {
+        emitFeature(
+          VersionedFeature(
+            Features.AGP,
+            agpVersion,
+            extras = r8.takeIf { it.isNotEmpty() }?.let { mapOf("R8" to formatR8Versions(it)) }
+          )
+        )
       }
       if (readCompose) {
         emitFeature(
@@ -272,7 +300,9 @@ class GetAppDetailFeaturesUseCase(
     packageInfo: PackageInfo,
     apk: File,
     zip: ZipFileCompat,
-    isApk: Boolean
+    isApk: Boolean,
+    r8: MutableSet<String>,
+    checkCancelled: () -> Unit
   ): Map<String, String?> {
     val componentPackageInfo = if (isApk) {
       null
@@ -286,7 +316,9 @@ class GetAppDetailFeaturesUseCase(
     return KotlinBuildMetadataDetector.detect(
       apk = apk,
       zip = zip,
-      inferenceHints = KotlinVersionInferenceHints.from(packageInfo, componentPackageInfo)
+      inferenceHints = KotlinVersionInferenceHints.from(packageInfo, componentPackageInfo),
+      checkCancelled = checkCancelled,
+      onDexRead = { dex -> r8.addAll(R8BuildMetadataDetector.detect(dex, checkCancelled = checkCancelled)) }
     ).toKotlinDialogEntries()
   }
 
@@ -307,7 +339,7 @@ class GetAppDetailFeaturesUseCase(
     if (!hasAddedMonochrome && OsUtils.atLeastT() && applicationInfo.icon != 0) {
       try {
         val resources = packageManager.getResourcesForApplication(applicationInfo)
-        val rawIcon = resources.getDrawable(applicationInfo.icon, null)
+        val rawIcon = ResourcesCompat.getDrawable(resources, applicationInfo.icon, null)
 
         if (rawIcon is AdaptiveIconDrawable && rawIcon.monochrome != null) {
           icons.add(AppIconItem(rawIcon, true))
