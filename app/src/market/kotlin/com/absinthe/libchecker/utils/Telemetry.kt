@@ -21,17 +21,15 @@ object Telemetry {
   private const val UPLOAD_KEY_SHA256 = "b12e1cfbfe285849d6740018022eec2209feb28c2685df6f4d2f97dbde3b5775"
   private const val ENABLED = false
   init {
-    if (!ENABLED) return
-    val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
-    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-      if (isGmsCertificateException(throwable)) {
-        Timber.w(throwable, "Ignored GMS GoogleCertificatesRslt SecurityException on ${thread.name}")
-        return@setDefaultUncaughtExceptionHandler
-      }
-      defaultHandler?.uncaughtException(thread, throwable)
+  val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+  Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+    if (isGmsCertificateException(throwable)) {
+      Timber.w(throwable, "Ignored GMS GoogleCertificatesRslt SecurityException on ${thread.name}")
+      return@setDefaultUncaughtExceptionHandler
     }
+    defaultHandler?.uncaughtException(thread, throwable)
   }
-
+ }
   private val isAnalyticsSupported by lazy {
     val context = LibCheckerApp.app
     ENABLED && isGmsAvailable(context) && isOfficialPlayBuild(context)
